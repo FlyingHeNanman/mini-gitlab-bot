@@ -1,0 +1,23 @@
+# ============================================================
+# Codex CLI 配置：内网 OpenAI 兼容端点 + glab MCP
+# 挂载到容器内 ~/.codex/config.toml
+# ============================================================
+
+# 默认 provider 指向内网模型端点
+model_provider = "internal"
+model = "your-model-name"          # 如 qwen3-coder / deepseek-coder，按实际填
+
+[model_providers.internal]
+  name = "内网模型端点"
+  base_url = "http://llm-gateway:8000/v1"   # vLLM / Ollama / NIM / 公司网关
+  wire_api = "chat"                         # 端点不支持 responses API 时用 chat
+  env_key = "LLM_API_KEY"                   # 从环境变量读 key（容器内注入）
+
+# GitLab 工具：glab mcp serve（stdio MCP，自托管 GitLab 通用，无需服务器支持 MCP）
+[mcp_servers.glabs]
+  command = "glab"
+  args = ["mcp", "serve"]
+  env = {
+    GITLAB_HOST = "https://gitlab.example.com",   # 你的自托管实例
+    GITLAB_TOKEN = "glpat-xxx",                   # 机器人 PAT（scope: api）
+  }
