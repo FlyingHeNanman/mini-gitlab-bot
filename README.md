@@ -1,70 +1,51 @@
 # mini-gitlab-bot
 
-内网 GitLab 的轻量仓库维护机器人：**Codex CLI 做 agent 内核，Python 网关做触发器/收尾，Renovate 管依赖升级**。
+内网自托管 GitLab 的轻量仓库维护机器人：**Codex CLI 做 AI agent 内核，Python 网关做触发器 / 上下文准备 / 收尾编排**。
 
-收到带 `ai-fix` 标签的 Issue 后自动闭环：抓取 Issue → 回帖"已接单" → 建分支 → Codex 自主修复 → 网关 push → 开 **draft MR** → 人工审批合并。
+给 Issue 打上 `ai-fix` 标签即自动闭环：入队 → 准备环境 → Codex 自主修复 → 网关校验 → push → 开 **draft MR** → 人工审批合并。
+
+> ⚠️ **状态：架构已定案，代码待重写。**
+> 仓库内的 `gateway/` 是 v0 骨架（可作参考，存在已实测的静默失效缺陷）。
+> **设计的唯一事实来源是 [PLAN.md](PLAN.md)**，事实核查依据在 [docs/research/](docs/research/README.md)。
 
 ## 架构
 
 ```
-GitLab Issue(ai-fix 标签)
+GitLab Issue ── 打上 ai-fix 标签（或评论 /ai-fix）
    │  Webhook
    ▼
-Python 网关（常驻容器）──────────────────┐
-   │  唤醒                               │
-   ▼                                    │
-Codex CLI（codex exec --sandbox workspace-write）
-   │  ① glab MCP 抓 Issue + 回帖          │
-   │  ② 建分支、修代码、跑测试、commit     │
-   ▼                                    │
-网关收尾：git push → 创建 draft MR → 回帖  │
-   ▼                                    │
-GitLab：CI → 人工审批 → 合并 ◄────────────┘
-
-Renovate（独立容器）：定时扫描依赖，单独开 MR，互不干扰。
+Python 网关（常驻单容器）────────────────────────────────────┐
+   │  校验/幂等入队 → 建分支 clone → 准备环境(uv, 联网)        │
+   │  → 预取 context.md → 唤醒 codex → 校验 diff → push        │
+   │  → 开 draft MR → 状态评论 → 标签流转                       │
+   ▼                                                         │
+Codex CLI（沙箱 workspace-write：零网络、零凭据、只读写 workdir）│
+   │  读 context.md、改代码、跑测试、git commit                │
+   │  需要更多上下文 → 调「只读迷你 MCP」（限当前项目）          │
+   ▼                                                         │
+GitLab：CI → 人工审批 → 合并 ◄───────────────────────────────┘
 ```
 
-关键设计：
+## 关键设计
 
-- **Codex 通过 MCP 拿 GitLab 工具**（`glab mcp serve`，stdio），shell 沙箱保持 `workspace-write`（无网络、写限工作目录）——MCP 进程不受 shell 沙箱网络限制，token 只被 glab 使用。
-- **网关只管三件事**：接 Webhook 校验入队、唤醒 `codex exec`、收尾 push + 开 draft MR + 回帖。
+- **agent 零凭据、零网络**：sandbox 用 `workspace-write`（网络默认关闭，写限工作目录），且不向 agent 暴露任何 token —— 这样即使 issue 正文携带 prompt injection，也没有外泄通道。
+- **网关独占 GitLab 读写**：单一写者，审计清晰；正确方向是"开只读的洞，把写权限攥在手里"。
+- **只读迷你 MCP（自研）**：给 agent 4 个只读工具（读 issue/搜历史/读 CI 日志/查近期提交），**工具 schema 里没有 project 参数**（项目由网关注入，物理上无法跨项目），并使用独立的 `read_api` token。不采用 `glab mcp serve`（官方已弃用、217 个工具、无只读模式）。
+- **两阶段执行**：装依赖在网关侧（可访问内网 kkRepo），跑 agent 时完全离线（`UV_OFFLINE=1 uv run --no-sync`）。
 - **人工兜底**：永远只开 draft MR，合并必须人工审批。
+- **失败不静默**：状态用单条评论原地编辑，标签流转 `ai-fix:running` → `ai-fix:done` / `ai-fix:failed`。
 
-## 快速开始
-
-### 1. 准备（GitLab 侧）
+## 快速开始（GitLab 侧准备）
 
 1. 建机器人账号（如 `gitlab-bot`），角色给目标项目 **Developer**（不要给管理员）。
-2. 生成 Personal Access Token，scope 勾选 `api`。
-3. 目标项目加标签 `ai-fix`。
+2. 生成 Personal Access Token：
+   - 主 token：scope `api`（网关读写）
+   - 只读 token：scope `read_api`（只读迷你 MCP 用）
+3. 目标项目加标签：`ai-fix`、`ai-fix:running`、`ai-fix:done`、`ai-fix:failed`。
 4. 项目 → Settings → Webhooks → 添加：
    - URL：`http://<bot容器>:8080/webhook`
    - Secret token：与 `WEBHOOK_SECRET` 一致
-   - 勾选触发事件 **Issues events**
-
-### 2. 配置
-
-```bash
-cp .env.example .env
-# 编辑 .env：GITLAB_URL / GITLAB_TOKEN / WEBHOOK_SECRET / MODEL_NAME 等
-```
-
-内网模型端点与 glab MCP 配置见 `codex/config.toml`（挂载到容器内 `~/.codex/config.toml`）。
-
-### 3. 启动
-
-```bash
-docker compose up -d --build
-curl localhost:8080/health   # → {"status":"ok"}
-```
-
-### 4. 验证
-
-在任意白名单项目里建一个带 `ai-fix` 标签的 Issue，观察：
-
-```
-Issue 出现 bot 回帖"已接单" → 分支 fix/issue-N 出现 → draft MR 创建（Closes #N）→ 回帖 MR 链接
-```
+   - 勾选 **Issues events**（若要用评论命令，再勾 **Comments**；要用机密 issue 再勾 Confidential work items events）
 
 ## 配置项（环境变量）
 
@@ -72,32 +53,26 @@ Issue 出现 bot 回帖"已接单" → 分支 fix/issue-N 出现 → draft MR �
 | --- | --- | --- |
 | `WEBHOOK_SECRET` | GitLab Webhook 的 Secret token | `change-me` |
 | `GITLAB_URL` | GitLab 实例地址 | `https://gitlab.example.com` |
-| `GITLAB_TOKEN` | 机器人 PAT（scope: api） | — |
+| `GITLAB_TOKEN` | 主 token（scope: `api`） | — |
+| `GITLAB_READ_TOKEN` | 只读 token（scope: `read_api`，供迷你 MCP） | — |
 | `REPO_WHITELIST` | 允许处理的项目，逗号分隔；空 = 全部 | — |
 | `AI_FIX_LABEL` | 触发标签 | `ai-fix` |
 | `TARGET_BRANCH` | MR 目标分支 | `main` |
 | `MODEL_PROVIDER` | Codex 的 model_provider（对应 config.toml） | `internal` |
-| `MODEL_NAME` | 模型名（如 `qwen3-coder`） | — |
+| `MODEL_NAME` | 模型名 | — |
+| `UV_DEFAULT_INDEX` | 内网 kkRepo 源 | — |
 | `AGENT_CONCURRENCY` | 并发处理的 Issue 数 | `2` |
-| `MAX_ITERATIONS` | Codex 修复失败后的重试轮数 | `3` |
 | `AGENT_TIMEOUT_SEC` | 单次 codex 会话超时 | `1800` |
-| `RENOVATE_TOKEN` | Renovate 的机器人 token | — |
+
+> `wire_api` 必须为 `responses`（`chat` 已是 Codex 硬错误）。
 
 ## 安全边界（务必阅读）
 
-1. **沙箱**：`codex exec --sandbox workspace-write`——agent 无网络、只能写工作目录；GitLab 操作全部走 glab MCP 进程。
-2. **Token 最小权限**：机器人账号只加目标项目 Developer；token scope 只用 `api`，绝不使用管理员。
-3. **人工审批**：只开 draft MR；建议配合 GitLab 审批规则 + 受保护分支，禁止 bot 直接合并。
-4. **代码审查**：MR 描述固定带 `Closes #N`，合并前人工过 diff。
-5. **不要**：让 Codex 使用 `--sandbox danger-full-access`（等于把容器交给 agent）。
-
-## Renovate（依赖升级）
-
-```bash
-docker compose up -d renovate
-```
-
-定时扫描依赖并自动开 MR；需要自动合并时在 `renovate.json` 配 `automerge: true`（配合 GitLab MWPS）。
+1. **沙箱**：只用 `codex exec --sandbox workspace-write`；**禁止** `danger-full-access`。
+2. **agent 零凭据零网络**：token 只存在于网关进程；安全关键配置全部用 `-c` 下发（优先级高于仓库自带配置）。
+3. **只读 token 物理隔离**：迷你 MCP 只有 `read_api`，即使被利用也无法写。
+4. **人工审批**：只开 draft MR；配合 GitLab 审批规则 + 受保护分支，禁止 bot 直接合并。
+5. **必须落实**：启动前删除 workdir 里的 `.codex/`；每个 job 独立 `TMPDIR`；永不把克隆目录标记为 trusted；pin 死 codex 版本。
 
 ## 开发
 
@@ -106,7 +81,7 @@ pip install -r requirements.txt
 uvicorn gateway.app:app --reload --port 8080
 ```
 
-任务状态存 SQLite（`/data/tasks.db`），崩溃后自动去重恢复。
+主干将按**端口 / 适配器**重构（`core/` `ports/` `adapters/`），以便用假 SCM + 假 agent 在 CI 中端到端测试。任务状态存 SQLite。
 
 ## License
 
