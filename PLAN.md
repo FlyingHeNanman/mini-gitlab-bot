@@ -1,7 +1,7 @@
 # mini-gitlab-bot 交接文档（v2 · 架构定案）
 
 > 用途：记录「内网 GitLab 仓库维护机器人」的最终架构、决策依据、已验证技术事实与实施计划，供后续接手者直接开工。
-> 更新日期：2026-10-17　状态：**M4 已完成（只读迷你 MCP，374 项测试全绿），下一步 M5 运维加固**；v0 骨架中被取代的部分已删除（§8.1）
+> 更新日期：2026-10-17　状态：**v1 全部里程碑完成（M1–M5，417 项测试全绿）**；下一步是上线前的三项人工验证与镜像首建（§8.5 末段）；v0 骨架中被取代的部分已删除（§8.1）
 > 事实核查详见 [`docs/research/`](docs/research/README.md)；本文只保留结论。
 
 ---
@@ -182,24 +182,28 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 
 v0 中已被完全取代的 `gateway/db.py`、`gateway/worker.py`、`gateway/gitlab_client.py` **均已删除**（最后一个是 M3 用 `adapters/gitlab_client.py` 取代后删的；它把 token 拼进 clone URL，违反 §7 加固基线 5）。
 
-当前目录（`uv run pytest` → **374 项全绿**；`uv run ruff check` 干净）：
+当前目录（`uv run pytest` → **417 项全绿**；`uv run ruff check` 干净）：
 
 ```
 core/     states(状态机) · models · branch · policy(diff 策略) · context(context.md) ·
           render(文案) · orchestrator(编排) · worker(租约/看门狗/恢复) · errors ·
-          layout(内部产物路径与 git 忽略规则) · mcp_spec(MCP 工具契约)        ← 纯逻辑，零 IO
-ports/    store · scm · vcs · agent · workspace · env · notifier              ← 仅 Protocol
+          layout(内部产物路径与 git 忽略规则) · mcp_spec(MCP 工具契约) ·
+          logging_setup(JSON 日志 + task_id 上下文) · metrics(指标注册表)      ← 纯逻辑，零 IO
+ports/    store · scm · vcs · agent · workspace · env · notifier · janitor   ← 仅 Protocol
 adapters/ sqlite_store(持久队列+状态机) · fakes(假 SCM/VCS/Agent/Env/Workspace/ProcessRunner) ·
           git_cli(M2 真件) · uv_env(M2 真件) · codex_cli(M2 真件) · proc(子进程+脱敏) ·
           local_workspace(M2 真件) · gitlab_client(M3 真件，python-gitlab) ·
-          comment_notifier · unavailable(占位：未实现时明确失败，不静默放行)
+          comment_notifier · janitor(保留策略) ·
+          unavailable(占位：未实现时明确失败，不静默放行)
 gateway/  app(HTTP) · config(pydantic-settings) · webhook(解析/幂等/闸门) ·
           permissions(Developer 下限 + 白名单) · runtime(装配：build_runtime / build_production_runtime) ·
-          mcp_readonly(只读迷你 MCP：stdio JSON-RPC + 11 个只读工具)
+          mcp_readonly(只读迷你 MCP：stdio JSON-RPC + 11 个只读工具) ·
+          app 里的 /healthz /readyz /metrics
 tests/    unit(状态机/分支策略/diff 策略/文案/context/MCP 协议/webhook 解析/权限/SQLite/
-               配置/脱敏/Python 版本规划/workspace 越界/SCM 分支时序) ·
+               配置/脱敏/Python 版本规划/workspace 越界/SCM 分支时序/日志/指标/
+               Janitor/容器资产静态检查) ·
           integration(假适配器全链路 / 崩溃恢复 / HTTP 层 / 真 git / 真 uv / 真 GitLab API 桩 /
-              桩 codex 全链路 / 真 SCM 闭环 / 真 MCP 子进程) ·
+              桩 codex 全链路 / 真 SCM 闭环 / 真 MCP 子进程 / 运维端点) ·
           stub_gitlab(可编程的本地 GitLab API v4)
 ```
 
@@ -329,6 +333,28 @@ stdout 只留协议、日志一律走 stderr）。工具契约（11 个 schema +
 调用这些工具"未能在仓库内验证**（无 codex 二进制、无 LLM 端点），必须与 M2/M3 的两项
 人工验证一起，在内网机器上补做。
 
+### 8.5 M5 落地结果（2026-10-17）
+
+| 项 | 做法 | 验证 |
+| --- | --- | --- |
+| 镜像 | 多阶段：`node` 层装并 pin codex → `python:3.13-slim` 运行时；**非 root（uid 10001）**、`cap_drop: ALL`、`no-new-privileges`、`init: true`；`uv sync --frozen` 两层缓存；`HEALTHCHECK` 打 `/healthz` | 静态校验（`tests/unit/test_container_assets.py`）：pin 版本、非 root、`COPY` 四个包、无 glab、健康检查、compose 无 renovate/TARGET_BRANCH |
+| 结构化日志 | `core/logging_setup.py`：JSON 一行一条，`ts/level/logger/msg/task_id`，异常带 `exc`；`task_id` 用 `contextvars` 由 worker 注入（协程级隔离） | 单测 + 真机烟测：uvicorn 全量日志行 **0 条非 JSON** |
+| 就绪/存活 | `/healthz` 只回 `{"status":"ok"}`；`/readyz` 检查 存储可读 / worker 在跑 / 无卡死租约，只回状态类别（不泄露任务细节） | 集成测试：ok / worker_disabled / store / stalled 四种分支 |
+| 指标 | `core/metrics.py`（自研，无 prometheus_client）：`tasks_total{state}`、`task_duration_seconds`、`task_failures_total{stage}`、`queue_depth`、`worker_inflight`、`janitor_*`；标签只用有限枚举 | 单测 + 集成：跑一个任务后能看到计数；存储炸了也不 500 |
+| 保留策略 | `adapters/janitor.py`：日志 14 天、终态任务 90 天（`store.purge_terminal`）、孤儿 job 目录 1 天；只删 `task-` 前缀且不属于任何非终态任务 | 单测：老目录删、新目录留、非 `task-` 不动、在飞任务目录绝不动 |
+
+**M5 期间实测发现并处理的问题**
+
+- `configure_logging` 之后 uvicorn 仍用自己的 handler → 每行日志**输出两遍**（纯文本 + JSON）。
+  修法：`attach_uvicorn_loggers()` 摘掉 uvicorn 的 handler 并接回根 logger，且在 **lifespan 里再叫一次**
+  （uvicorn 在 import 之后才应用它的 logging 配置）。
+- `/readyz` 的"卡死"判定最初用 `datetime.now()`，与注入时钟不一致、测试不可控 → 改为用 `runtime.clock()`（单一时钟源）。
+
+**诚实声明（M5 判据）**：镜像与 compose 只做了**静态**校验 —— 本仓库环境没有 docker
+也没有外网，`uv`/codex 的 pin 版本是否可拉取、`@openai/codex` 的 npm 包装是否还需其它
+运行时依赖，都必须在那台构建机上实际 `docker compose build` 一次才能确认。这是上线前
+除三项人工验证之外的第四件事。
+
 
 
 ## 9. 里程碑与待办
@@ -340,11 +366,7 @@ stdout 只留协议、日志一律走 stderr）。工具契约（11 个 schema +
 | **M2 Agent 链路** | job 工作目录与隔离、`context.md` 预取、uv 两阶段、分支创建、codex 调用（`-c` 钉死 + 删 `.codex/` + `--json` 落盘 + 四条件判定）、diff 策略校验 | ✅ 代码完成：278 项测试全绿。真件链路（本地 bare 仓 + 真 `uv sync` + 桩 codex）端到端跑通"改代码 → commit → 校验通过"，并覆盖四条件各条失败、禁改路径拦截、超时杀进程组、凭据不外泄；**"真 agent 至少一次成功"待内网机器补做**（本环境无 LLM 端点，见 §8.2） |
 | **M3 收尾与状态** | push（凭据不进 argv）、draft MR、单条状态评论原地编辑、标签状态机流转、失败升级 | ✅ 代码完成：319 项测试全绿。`GitLabSCM` 用 python-gitlab 真发 HTTP，打到可编程的本地桩 GitLab（`tests/stub_gitlab.py`）验证请求形状与幂等；**"真 GitLab 实例上一次完整闭环"待内网机器补做**（见 §8.3） |
 | **M4 只读迷你 MCP** | 11 个只读工具（§3.3）、项目绑定、`read_api` token、输出截断 | ✅ 代码完成：374 项测试全绿。真子进程 + 真 stdio 协议 + 真 HTTP 验证了 11 个工具、`get_job_log` 取到失败日志、跨项目参数被拒、写 token 在场即拒绝启动（见 §8.4）；**"真 GitLab + 真 codex 下 agent 主动调用"待内网机器补做** |
-| **M5 运维加固** | pin 版本、镜像重写（`Dockerfile` / `docker-compose.yml` 目前是 v0 遗留，已加警告头）、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权（v1 不暴露） | —— |
-
-> M5 镜像重写时必须补齐 M2 引入的运行时前提：基础镜像 **Python 3.13**、装 **uv** 与 **git**、
-> 建 **`LOG_DIR`（默认 `/data/logs`）** 与 `UV_CACHE_DIR` 卷、pin 死 codex 版本、
-> `COPY` 带上 `core/ ports/ adapters/ gateway/`（只 copy `gateway/` 会 ImportError）。
+| **M5 运维加固** | pin 版本、镜像重写、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权（v1 不暴露） | ✅ 代码完成：417 项测试全绿。镜像/编排已重写并做静态校验；`/readyz`、`/metrics`、JSON 日志、Janitor 均有测试与真机烟测（§8.5）。**镜像首次 build 与 `/tasks` 的最终取舍待上线时确认**（v1 仍不暴露） |
 
 **已明确推迟**：Renovate（F-1，不进本仓库）；GitHub 平台适配；非 Python 项目；仓库级配置 `.mini-gitlab-bot.yaml`（§12）；以及 `TODO.md` 里记录的两条需求（issue 自动回复并关闭、按 tag 自动补 release 文案）—— 都属于 v1 之后的功能扩充，不进 M1–M5。
 

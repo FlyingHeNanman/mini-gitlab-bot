@@ -15,6 +15,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
+from core.logging_setup import bind_task
 from core.models import ReapOutcome, Task
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ class Worker:
         poll_interval_sec: float = 1.0,
         clock: Callable[[], datetime] = _utcnow,
         on_task_failed: Callable[[Task], Awaitable[None]] | None = None,
+        janitor=None,
+        metrics=None,
     ) -> None:
         self._store = store
         self._orchestrator = orchestrator
@@ -47,6 +50,8 @@ class Worker:
         self._poll_interval_sec = poll_interval_sec
         self._clock = clock
         self._on_task_failed = on_task_failed
+        self._janitor = janitor
+        self._metrics = metrics
         self._inflight: dict[str, asyncio.Task[None]] = {}
 
     @property
@@ -97,7 +102,9 @@ class Worker:
         )
         if task is None:
             return False
-        await self._orchestrator.process(task)
+        self._count_claim()
+        with bind_task(task.id):
+            await self._orchestrator.process(task)
         return True
 
     async def drain(self, *, max_steps: int = 100) -> int:
@@ -117,6 +124,8 @@ class Worker:
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),
             asyncio.create_task(self._reap_loop(), name="watchdog"),
         ]
+        if self._janitor is not None:
+            maint.append(asyncio.create_task(self._janitor.run_forever(), name="janitor"))
         try:
             while True:
                 self._fill()
@@ -145,13 +154,20 @@ class Worker:
             )
             if task is None:
                 return
+            self._count_claim()
             self._inflight[task.id] = asyncio.create_task(
                 self._process(task), name=f"task-{task.short_id}"
             )
 
+    def _count_claim(self) -> None:
+        if self._metrics is not None:
+            self._metrics.inc("worker_claims_total")
+
     async def _process(self, task: Task) -> None:
         try:
-            await self._orchestrator.process(task)
+            # 任务上下文：此后同一协程里的日志都会自动带 task_id
+            with bind_task(task.id):
+                await self._orchestrator.process(task)
         except Exception:  # noqa: BLE001 编排器内部已兜底，这里只防漏网
             logger.exception("任务 %s 处理时抛出未捕获异常", task.id)
 
@@ -172,6 +188,11 @@ class Worker:
                 await self.heartbeat()
             except Exception:  # noqa: BLE001
                 logger.exception("心跳续租失败")
+
+    @property
+    def inflight(self) -> int:
+        """当前并发中的任务数（给 /metrics 的 gauge 用）。"""
+        return len(self._inflight)
 
     async def _reap_loop(self) -> None:
         interval = max(5.0, self._poll_interval_sec * 5)

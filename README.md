@@ -4,17 +4,18 @@
 
 给 Issue 打上 `ai-fix` 标签即自动闭环：入队 → 准备环境 → Codex 自主修复 → 网关校验 → push → 开 **draft MR** → 人工审批合并。
 
-> **状态：M4（只读迷你 MCP）已完成** —— M1 主干 + M2 agent 链路 + M3 真 GitLab 之上，
-> 落地了自研的**只读迷你 MCP**（`python -m gateway.mcp_readonly`，stdio JSON-RPC）：
-> 11 个只读工具（issue/搜索/关联 MR/MR 详情/pipeline/job 列表/CI 日志/测试报告/commit diff/
-> 最近提交/项目元信息），**工具 schema 里没有 `project` 参数**（项目由网关经环境变量绑定，
-> agent 物理上换不了项目），只认 `read_api` 只读 token，输出默认截断 20k 字符。
-> `uv run pytest` → **374 项全绿**：`tests/integration/test_mcp_tools.py` 会**真的起一个 MCP
-> 子进程**、按 MCP 协议对话、让它的请求打到本地桩 GitLab（`tests/stub_gitlab.py`）。
+> **状态：M5（运维加固）已完成 —— v1 的五个里程碑全部落地。**
+> M1 主干/触发器 → M2 真实 agent 链路 → M3 真 GitLab 读写 → M4 只读迷你 MCP →
+> M5 运维加固：镜像重写（版本全 pin、非 root、健康检查、无 glab）、**结构化日志**
+> （JSON + task_id 上下文）、**/healthz /readyz /metrics**、**保留策略**（日志 14 天 /
+> 终态任务 90 天 / 孤儿 job 目录 1 天）。
+> `uv run pytest` → **417 项全绿**；`ruff check` / `ruff format --check` 干净。
 > **设计的唯一事实来源是 [PLAN.md](PLAN.md)**，事实核查依据在 [docs/research/](docs/research/README.md)，
 > 文案模板在 [docs/templates.md](docs/templates.md)。
 >
-> 尚未落地：镜像加固（M5，`Dockerfile` 仍是 v0 遗留）、`/tasks` 暴露（v1 不做）。
+> **上线前必须补做的三件人工验证**（本仓库无法覆盖，见 [PLAN.md](PLAN.md) §8.2–§8.5）：
+> 真 agent 首跑、真 GitLab 首跑、真 codex 下 MCP 工具调用；另外镜像构建需在有网环境
+> 实际 build 一次（这里是静态校验）。
 >
 > **诚实声明**：CI / 开发机没有真 GitLab 实例、没有 codex 二进制、没有 LLM 端点，所以
 > "真 GitLab 上一次完整闭环"与"真 agent 至少一次成功"这两条判据**无法在本仓库内验证**。
@@ -62,6 +63,29 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
    - 勾选 **Issues events**（若要用评论命令，再勾 **Comments**；要用机密 issue 再勾 Confidential work items events）
 5. 健康检查：`GET /healthz`（只回 `{"status":"ok"}`，故意不暴露任何任务信息）。
 
+## 运维
+
+| 端点 | 用途 | 返回 |
+| --- | --- | --- |
+| `GET /healthz` | 存活探针 | `{"status":"ok"}`（不含任何任务信息） |
+| `GET /readyz` | 就绪探针：数据库可读 + worker 在跑 + 没有卡死任务 | 200 `{"status":"ok","queued":N}` / 503 `{"status":"degraded","reason":"store\|worker_disabled\|stalled"}` |
+| `GET /metrics` | Prometheus 文本格式 | `mini_gitlab_bot_tasks_total{state=...}`、`task_duration_seconds`、`task_failures_total{stage=...}`、`queue_depth{state=queued\|active}`、`worker_inflight`、`janitor_*` |
+
+**日志**：`LOG_FORMAT=json`（默认）时每行一个 JSON，字段 `ts/level/logger/msg/task_id/...`，
+异常带 `exc`。`task_id` 由 worker 用 `contextvars` 注入，并发任务之间不会串味。
+`LOG_FORMAT=text` 便于本地阅读。
+
+**保留策略**（`Janitor`，默认每小时跑一次）：
+
+| 对象 | 位置 | 保留 | 说明 |
+| --- | --- | --- | --- |
+| codex / uv 日志 | `<LOG_DIR>/<task_id>/` | 14 天 | 复盘失败要能翻到原始 JSONL |
+| 终态任务 | SQLite `tasks` + `task_events` | 90 天 | 排队中/在飞的任务无论多老都保留 |
+| 孤儿 job 目录 | `<WORK_DIR>/task-*` | 1 天 | 只删 `task-` 前缀且不属于任何非终态任务 |
+
+**容器**：`docker compose up -d --build`（先 `cp .env.example .env`）。镜像非 root（uid 10001）、
+`cap_drop: ALL`、`no-new-privileges`、`init: true`、双卷（`/data` 存 SQLite+日志、`/work` 存 job 目录+uv 缓存）。
+
 ## 配置项（环境变量）
 
 | 变量 | 说明 | 默认 |
@@ -89,7 +113,12 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | `GIT_CLONE_DEPTH` / `GIT_TIMEOUT_SEC` | 浅克隆深度（0 = 完整）/ 单条 git 命令超时 | `0` / `600` |
 | `UV_BIN` / `UV_CACHE_DIR` | uv 可执行文件 / 缓存目录（空 = `WORK_DIR/.uv-cache`，必须在容器卷内） | `uv` / 空 |
 | `UV_DEFAULT_INDEX` / `UV_SYNC_TIMEOUT_SEC` | 内网 kkRepo 源 / `uv sync` 超时 | — / `1800` |
-| `LOG_DIR` | codex / uv 日志目录（`<LOG_DIR>/<task_id>/`，留 14 天） | `/data/logs` |
+| `LOG_DIR` | codex / uv 日志目录（`<LOG_DIR>/<task_id>/`） | `/data/logs` |
+| `LOG_FORMAT` / `LOG_LEVEL` | 日志格式（`json` / `text`）与级别 | `json` / `INFO` |
+| `LOG_RETENTION_DAYS` / `TASK_RETENTION_DAYS` / `ORPHAN_JOB_RETENTION_DAYS` | 日志 / 终态任务 / 孤儿 job 目录保留天数 | `14` / `90` / `1` |
+| `JANITOR_INTERVAL_SEC` | 清理间隔（秒，最小 60） | `3600` |
+| `METRICS_ENABLED` | 是否暴露 `/metrics` | `true` |
+| `READY_STALE_SEC` | `/readyz` 判定任务卡死的租约超时阈值 | `180` |
 | `AGENT_CONCURRENCY` | 并发处理的 Issue 数 | `2` |
 | `AGENT_TIMEOUT_SEC` | 单次 codex 会话超时 | `1800` |
 | `LEASE_SECONDS` / `MAX_ATTEMPTS` | 任务租约与最大重试次数（崩溃/超时恢复） | `60` / `3` |

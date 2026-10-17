@@ -65,6 +65,7 @@ class TaskOrchestrator:
         notifier,
         env=None,
         config: OrchestratorConfig | None = None,
+        metrics=None,
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
         self._store = store
@@ -75,6 +76,7 @@ class TaskOrchestrator:
         self._notifier = notifier
         self._env = env or _NoopEnv()
         self._config = config or OrchestratorConfig()
+        self._metrics = metrics
         self._clock = clock
 
     # ------------------------------------------------------------------ #
@@ -215,6 +217,7 @@ class TaskOrchestrator:
                 description=render.render_mr_description(task, issue=issue, now=self._clock()),
             )
 
+            self._count_finished(TaskState.SUCCEEDED, task)
             task = self._store.transition(
                 task.id,
                 TaskState.SUCCEEDED,
@@ -253,6 +256,12 @@ class TaskOrchestrator:
     # 失败收尾（也供看门狗调用）
     # ------------------------------------------------------------------ #
 
+    def _count_finished(self, state: TaskState, task: Task) -> None:
+        if self._metrics is None:
+            return
+        duration = max(0.0, (self._clock() - task.created_at).total_seconds())
+        self._metrics.task_finished(state.value, duration)
+
     async def finalize_failure(
         self,
         task: Task,
@@ -286,6 +295,9 @@ class TaskOrchestrator:
         log_path: str = "",
     ) -> Task:
         stage_value = stage.value if isinstance(stage, TaskState) else str(stage)
+        if self._metrics is not None:
+            self._metrics.task_failed(stage_value)
+            self._count_finished(TaskState.FAILED, task)
         if not task.is_terminal:
             task = self._store.fail(
                 task.id,

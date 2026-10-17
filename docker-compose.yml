@@ -1,40 +1,63 @@
-# ⚠️ v0 遗留文件，**M5 会重写**（PLAN §9）。当前缺陷，请勿直接使用：
-#   * TARGET_BRANCH / MAX_ITERATIONS 已删除（目标分支改取项目 default_branch；迭代上限取消）
-#   * 缺 M2 需要的 GITLAB_TOKEN 之外的接线：LOG_DIR、UV_CACHE_DIR、CODEX_BIN、GIT_* 等（见 .env.example）
-#   * 只挂了 /data 与 /work，没有独立日志卷；bot 与 renovate 的分工也已变更（Renovate 不进本项目）
+# =============================================================================
+# 单容器部署（M5 重写；v0 的 twin-service 版本已删除 —— Renovate 不进本项目）
+# =============================================================================
+# 使用步骤：
+#   1. 复制 .env.example → .env 并填好（至少 WEBHOOK_SECRET / GITLAB_TOKEN /
+#      GITLAB_READONLY_TOKEN / REPO_WHITELIST）
+#   2. docker compose up -d --build
+#   3. docker compose exec bot python -c "import urllib.request as u; print(u.urlopen(
+#        'http://127.0.0.1:8080/readyz').read())"
+#
+# 注意：容器内**不要**再挂宿主机上的 codex 配置或 GitLab token 文件；
+# 所有凭据只走环境变量（见 PLAN §7 红线）。
+# =============================================================================
+
 services:
   bot:
-    build: .
+    build:
+      context: .
+      args:
+        # 想跟进 codex 版本时改这里，同时改 .env 的 CODEX_EXPECTED_VERSION（基线 6）
+        CODEX_VERSION: ${CODEX_VERSION:-0.163.0}
+    image: mini-gitlab-bot:latest
+    # init 让 PID 1 能正确回收孤儿进程（codex / uv / git 都会产生子进程）
+    init: true
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 覆盖 .env 里的默认值：容器内固定用这两个卷
+      LOG_DIR: /data/logs
+      UV_CACHE_DIR: /work/.uv-cache
+      DB_PATH: /data/tasks.db
+      WORK_DIR: /work
     ports:
       - "8080:8080"
-    environment:
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      GITLAB_URL: ${GITLAB_URL}
-      GITLAB_TOKEN: ${GITLAB_TOKEN}
-      REPO_WHITELIST: ${REPO_WHITELIST:-}
-      TARGET_BRANCH: ${TARGET_BRANCH:-main}
-      AI_FIX_LABEL: ${AI_FIX_LABEL:-ai-fix}
-      MODEL_PROVIDER: ${MODEL_PROVIDER:-internal}
-      MODEL_NAME: ${MODEL_NAME:-}
-      AGENT_CONCURRENCY: ${AGENT_CONCURRENCY:-2}
-      MAX_ITERATIONS: ${MAX_ITERATIONS:-3}
-      AGENT_TIMEOUT_SEC: ${AGENT_TIMEOUT_SEC:-1800}
     volumes:
       - bot-data:/data
       - bot-work:/work
-    extra_hosts:
-      # 内网 GitLab 域名解析；有内网 DNS 时删掉这行
-      - "gitlab.example.com:10.0.0.5"
-
-  renovate:
-    image: renovate/renovate:latest
-    restart: unless-stopped
-    environment:
-      RENOVATE_PLATFORM: gitlab
-      RENOVATE_ENDPOINT: ${GITLAB_URL}/api/v4/
-      RENOVATE_TOKEN: ${RENOVATE_TOKEN}
-      RENOVATE_AUTODISCOVER: "true"
+    healthcheck:
+      # 就绪探针：数据库可读 + worker 在跑 + 没有卡死的任务
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # 给它时间把在飞任务的租约处理完（超时未完成会在下次启动被 recover 回队列）
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   bot-data:

@@ -54,6 +54,22 @@ class Settings(BaseSettings):
     #: 进 context.md 的 issue 评论条数（只取最新 N 条人类评论）
     issue_comment_limit: int = 20
 
+    # ---------- 可观测性与保留策略（M5） ----------
+    log_level: str = "INFO"
+    #: json | text（容器里用 json，本地开发用 text 更顺眼）
+    log_format: str = "json"
+    #: codex / uv 日志保留天数
+    log_retention_days: int = 14
+    #: 终态任务（tasks + task_events）保留天数
+    task_retention_days: int = 90
+    #: 孤儿 job 目录（进程被 kill 后残留）保留天数
+    orphan_job_retention_days: int = 1
+    #: 清理间隔（秒）
+    janitor_interval_sec: float = 3600.0
+    metrics_enabled: bool = True
+    #: /readyz 判"任务卡住"的阈值（租约过期多久算异常）
+    ready_stale_sec: int = 180
+
     # ---------- 只读迷你 MCP（M4，PLAN §3.3） ----------
     #: 总开关；没有 GITLAB_READONLY_TOKEN 时自动失效（无法认证就没有意义）
     mcp_enabled: bool = True
@@ -128,6 +144,8 @@ class Settings(BaseSettings):
                 f"MIN_ACCESS_LEVEL={self.min_access_level} 低于 Developer(30)："
                 "只读成员可以让机器人往仓库推分支（权限提升）"
             )
+        if not self.webhook_secret and self.worker_enabled:
+            warnings.append("WORKER_ENABLED=true 但没有活跃 webhook：任务只能来自手工入队")
         if not self.gitlab_token:
             warnings.append("GITLAB_TOKEN 未设置：SCM 退回占位实现，权限闸门会拒绝所有触发")
         if not self.model_name:

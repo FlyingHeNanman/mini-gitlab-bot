@@ -463,6 +463,25 @@ class SqliteStore:
             for row in rows
         ]
 
+    def purge_terminal(self, *, before: datetime) -> int:
+        with self._lock:
+            conn = self._connection()
+            rows = conn.execute(
+                f"SELECT id FROM tasks WHERE state IN {_TERMINAL_SQL}"
+                " AND finished_at IS NOT NULL AND finished_at < ?",
+                (_iso(before),),
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            if not ids:
+                return 0
+            # 事件表没有外键（见 schema），必须显式清；分块避免 SQLite 变量上限
+            for start in range(0, len(ids), 400):
+                chunk = ids[start : start + 400]
+                placeholders = ", ".join("?" for _ in chunk)
+                conn.execute(f"DELETE FROM task_events WHERE task_id IN ({placeholders})", chunk)
+                conn.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", chunk)
+            return len(ids)
+
     def close(self) -> None:
         with self._lock:
             if self._conn is not None:

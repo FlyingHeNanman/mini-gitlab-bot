@@ -77,4 +77,11 @@ class Store(Protocol):
 
     def events(self, task_id: str) -> list[TaskEvent]: ...
 
+    def purge_terminal(self, *, before: datetime) -> int:
+        """删除 `finished_at < before` 的终态任务（含其事件），返回删除条数。
+
+        只删**终态**：排队中/在飞的任务无论多老都留着（那是运维要看的现场）。
+        """
+        ...
+
     def close(self) -> None: ...

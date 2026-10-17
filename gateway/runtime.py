@@ -23,6 +23,7 @@ from adapters.codex_cli import CodexCli, CodexSettings
 from adapters.comment_notifier import CommentNotifier
 from adapters.git_cli import GitCli
 from adapters.gitlab_client import GitLabSCM, GitLabSettings
+from adapters.janitor import Janitor, RetentionSettings
 from adapters.local_workspace import LocalWorkspace
 from adapters.sqlite_store import SqliteStore
 from adapters.unavailable import (
@@ -34,6 +35,7 @@ from adapters.unavailable import (
 )
 from adapters.uv_env import UvEnvPreparer, UvSettings
 from core.mcp_spec import TOOL_NAMES
+from core.metrics import Metrics
 from core.models import Task
 from core.orchestrator import OrchestratorConfig, TaskOrchestrator
 from core.policy import DiffPolicy
@@ -63,6 +65,8 @@ class Runtime:
     orchestrator: TaskOrchestrator
     worker: Worker | None
     clock: Callable[[], datetime]
+    metrics: Metrics
+    janitor: Any
 
 
 def build_runtime(
@@ -77,6 +81,8 @@ def build_runtime(
     notifier: Any | None = None,
     with_worker: bool = True,
     clock: Callable[[], datetime] = _utcnow,
+    metrics: Metrics | None = None,
+    janitor: Any | None = None,
 ) -> Runtime:
     store = store if store is not None else SqliteStore(settings.db_path)
     scm = scm if scm is not None else UnavailableSCM()
@@ -85,6 +91,7 @@ def build_runtime(
     workspace = workspace if workspace is not None else UnavailableWorkspace()
     env = env if env is not None else UnavailableEnv()
     notifier = notifier if notifier is not None else CommentNotifier(scm)
+    metrics = metrics if metrics is not None else Metrics()
 
     orchestrator = TaskOrchestrator(
         store=store,
@@ -94,6 +101,7 @@ def build_runtime(
         workspace=workspace,
         env=env,
         notifier=notifier,
+        metrics=metrics,
         config=OrchestratorConfig(
             max_attempts=settings.max_attempts,
             agent_timeout_sec=settings.agent_timeout_sec,
@@ -146,6 +154,8 @@ def build_runtime(
         orchestrator=orchestrator,
         worker=worker,
         clock=clock,
+        metrics=metrics,
+        janitor=janitor,
     )
 
 
@@ -174,10 +184,28 @@ def build_production_runtime(
         else:
             logger.warning("GITLAB_TOKEN 未设置：SCM 退回占位实现，任务会在权限闸门被拒绝")
             scm = UnavailableSCM()
+    if store is None:
+        store = SqliteStore(settings.db_path)
+    metrics = Metrics()
+    janitor = Janitor(
+        store=store,
+        work_dir=settings.work_dir,
+        log_dir=settings.log_dir,
+        settings=RetentionSettings(
+            log_days=settings.log_retention_days,
+            task_days=settings.task_retention_days,
+            orphan_job_days=settings.orphan_job_retention_days,
+            interval_sec=settings.janitor_interval_sec,
+        ),
+        clock=clock,
+        metrics=metrics,
+    )
     workspace = LocalWorkspace(settings.work_dir)
     return build_runtime(
         settings,
         store=store,
+        metrics=metrics,
+        janitor=janitor,
         scm=scm,
         vcs=GitCli(
             jobs_root=settings.work_dir,

@@ -236,6 +236,19 @@ class AgentResult:
 
 
 @dataclass(frozen=True, slots=True)
+class JanitorReport:
+    """一次保留策略清理的结果（PLAN §9 M5：日志 14 天、终态任务 90 天）。"""
+
+    removed_log_dirs: int = 0
+    removed_job_dirs: int = 0
+    purged_tasks: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.removed_log_dirs + self.removed_job_dirs + self.purged_tasks
+
+
+@dataclass(frozen=True, slots=True)
 class EnvReport:
     """准备阶段（网关联网）的结果 —— 两阶段模型的前半段（PLAN §4）。
 
