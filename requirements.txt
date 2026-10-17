@@ -1,4 +1,7 @@
+# 由 pyproject.toml 派生（M5 会改成 `uv export` 生成的 pin 版本列表）。
+# 真正的依赖声明与锁定在 pyproject.toml + uv.lock。
 fastapi>=0.115
 uvicorn[standard]>=0.30
-python-gitlab>=4.10
 pydantic>=2.7
+pydantic-settings>=2.4
+python-gitlab>=4.10

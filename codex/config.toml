@@ -1,23 +1,28 @@
 # ============================================================
-# Codex CLI 配置：内网 OpenAI 兼容端点 + glab MCP
-# 挂载到容器内 ~/.codex/config.toml
+# Codex CLI 的**用户级**配置（容器内 ~/.codex/config.toml）
+# ============================================================
+# 这是"我们自己的"配置（优先级 20，低于网关用 `-c` 下发的 30）。
+# 因此安全关键项（sandbox_mode / network_access / approval_policy）**不写在这里** ——
+# 它们由 adapters/codex_cli.py 在每次调用时用 `-c` 钉死，见 PLAN §7 加固基线 3。
+#
+# 本文件只保留"内网模型端点"这一件事。两条铁律：
+#
+#   1. **绝不出现任何凭据**：key 只以变量名（env_key）形式出现，值由网关在启动
+#      codex 时经子进程环境传入（且只有模型 key 会被传入）。
+#   2. **绝不出现 `mcp_servers`**：v0 曾在这里挂 `glab mcp serve`，并通过 `env`
+#      把机器人的 `api` token 注入 agent —— 那等于把 GitLab 写权限交给 agent，
+#      直接违反 PLAN §7 红线 2。agent 要上下文只能走只读迷你 MCP（M4）。
+#
+# `tests/unit/test_codex_config_hygiene.py` 会校验以上两条。
 # ============================================================
 
-# 默认 provider 指向内网模型端点
 model_provider = "internal"
 model = "your-model-name"          # 如 qwen3-coder / deepseek-coder，按实际填
 
 [model_providers.internal]
   name = "内网模型端点"
   base_url = "http://llm-gateway:8000/v1"   # vLLM / Ollama / NIM / 公司网关
-  wire_api = "chat"                         # 端点不支持 responses API 时用 chat
-  env_key = "LLM_API_KEY"                   # 从环境变量读 key（容器内注入）
-
-# GitLab 工具：glab mcp serve（stdio MCP，自托管 GitLab 通用，无需服务器支持 MCP）
-[mcp_servers.glabs]
-  command = "glab"
-  args = ["mcp", "serve"]
-  env = {
-    GITLAB_HOST = "https://gitlab.example.com",   # 你的自托管实例
-    GITLAB_TOKEN = "glpat-xxx",                   # 机器人 PAT（scope: api）
-  }
+  # PLAN §6 实测：新版 codex 里 `wire_api = "chat"` 是硬错误，必须用 responses。
+  # 若内网端点确实只支持 chat completions，需要先在内网网关侧做协议转换。
+  wire_api = "responses"
+  env_key = "LLM_API_KEY"                   # 从环境变量读 key（网关注入，不落盘）

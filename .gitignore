@@ -4,6 +4,17 @@ __pycache__/
 .venv/
 .env
 *.db
+*.sqlite3
 data/
 work/
 .DS_Store
+
+# uv / pytest / ruff 缓存（沙箱内不能写 ~/.cache，见 PLAN §4）
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+
+# 本地试跑留下的目录（README 里的 .dev、烟测的 .smoke*、任务工作目录）
+.dev/
+.smoke*/
+.sandbox/

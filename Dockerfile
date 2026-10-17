@@ -1,3 +1,11 @@
+# ⚠️ v0 遗留文件，**M5 会重写**（PLAN §9）。当前缺陷，请勿直接部署：
+#   * 基础镜像是 python:3.12-slim，而本项目要求 3.13（PLAN §10 假设 4）
+#   * 没有装 uv（M2 的准备阶段 `uv sync` 依赖它）
+#   * 装了 glab（PLAN 已决定不用 glab MCP，M5 删除）
+#   * 没有建 /data/logs（M2 的 LOG_DIR 默认值），日志会被写进容器可写层
+#   * `COPY gateway ./gateway` 没有带上 core/ ports/ adapters/，启动会 ImportError
+#   * codex 版本未 pin（PLAN §7 基线 6 要求 pin 死）
+# 现阶段开发/联调请在宿主上用 `uv run uvicorn ...`（见 README「开发」）。
 FROM python:3.12-slim
 
 # 基础工具

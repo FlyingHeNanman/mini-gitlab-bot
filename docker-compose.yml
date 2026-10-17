@@ -1,3 +1,7 @@
+# ⚠️ v0 遗留文件，**M5 会重写**（PLAN §9）。当前缺陷，请勿直接使用：
+#   * TARGET_BRANCH / MAX_ITERATIONS 已删除（目标分支改取项目 default_branch；迭代上限取消）
+#   * 缺 M2 需要的 GITLAB_TOKEN 之外的接线：LOG_DIR、UV_CACHE_DIR、CODEX_BIN、GIT_* 等（见 .env.example）
+#   * 只挂了 /data 与 /work，没有独立日志卷；bot 与 renovate 的分工也已变更（Renovate 不进本项目）
 services:
   bot:
     build: .

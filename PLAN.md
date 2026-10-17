@@ -1,7 +1,7 @@
 # mini-gitlab-bot 交接文档（v2 · 架构定案）
 
 > 用途：记录「内网 GitLab 仓库维护机器人」的最终架构、决策依据、已验证技术事实与实施计划，供后续接手者直接开工。
-> 更新日期：2026-10-16　状态：**架构已定案，代码 v0 骨架待按本文重写**（本轮不写代码）
+> 更新日期：2026-10-17　状态：**M2 已完成（Agent 链路：真 git / 真 uv / codex 调用，278 项测试全绿），下一步 M3 收尾与状态**；v0 骨架中被取代的部分已删除（§8.1）
 > 事实核查详见 [`docs/research/`](docs/research/README.md)；本文只保留结论。
 
 ---
@@ -67,8 +67,19 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | --- | --- | --- |
 | `get_issue` | 当前 issue 详情 + 评论（分页） | `include_comments`、`page` |
 | `search_issues` | 在**当前项目内**按关键词搜历史 issue | `query`、`state` |
+| `list_issue_related_merge_requests` | 当前 issue 关联的 MR（判断是否已有在途修复） | —— |
+| `get_merge_request` | MR 详情 + 讨论 | `iid`、`include_notes` |
+| `list_pipelines` | 分支/最近 pipeline 及状态（判断主线是否绿） | `ref`、`status`、`limit` |
+| `list_pipeline_jobs` | 某 pipeline 的 job 列表 → **拿到失败 job_id** | `pipeline_id`、`scope` |
 | `get_job_log` | 读当前项目某 CI job 的失败日志 | `job_id`、`tail_lines` |
+| `get_pipeline_test_report` | 结构化失败用例（比 raw trace 精准省上下文） | `pipeline_id` |
+| `get_commit_diff` | 单个 commit 的完整 patch + message | `sha` |
 | `get_recent_commits` | 最近提交（可按路径过滤） | `limit`、`path` |
+| `get_project` | 项目元信息（默认分支、描述、topics、语言） | —— |
+
+> 共 **11 个只读工具**（工具定义约 4–6 KB；对比 glab 的 217 工具 / ~114 KB）。
+> `list_pipeline_jobs` 是**必需项**：缺了它 agent 无从获得 `job_id`，`get_job_log` 等于不可用。
+> **明确不做**：`search_code`（自托管常无 advanced search，且 agent 手里已有完整 clone，自己 grep 更准）、`get_job_artifacts`（体积不可控，会把 MCP 通道变成文件搬运工）。
 
 **四条硬约束（缺一不可）**
 
@@ -110,6 +121,10 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | MR 形态 | 永远 **draft MR + 人工审批** | 人工兜底原则 | 沿用 |
 | **Renovate** | **本项目不包含（F-1）** | 它是独立产品（定时/跨项目/改版本号），与 issue 修复无交集；先打通闭环 | **推翻 v1**（原为 compose 内常驻容器） |
 | 部署形态 | 常驻单容器 | 用户明确不要"每次拉起容器" | 沿用 |
+| **触发者权限** | **Developer (30) 及以上**（可叠加用户白名单） | 与"能推代码"对齐，避免 Guest/Reporter 借机器人提权 | 新增 |
+| **目标分支** | **项目 `default_branch`**（v1）；将来由 `.mini-gitlab-bot.yaml` 覆盖 | 零配置、与 GitLab 设置自动同步 | 修正 v1（原为全局 `TARGET_BRANCH`） |
+| **Python 版本** | 镜像**只预置 3.13**，其他版本准备阶段从 kkRepo 补装 | 用户明确；补装失败即 failed 并写明原因 | 新增 |
+| **状态页 `/tasks`** | **v1 不暴露**（仅无信息 `/healthz`） | 不提前决定鉴权方案；磁盘风险靠"job 目录终态即清"解决 | 新增 |
 | 命名 / License / 可见性 | `mini-gitlab-bot` / Apache-2.0 / 私有 | —— | 沿用 |
 
 ## 6. 已验证技术事实（核查基准：Codex repo `6ae8b8aa` ≈ rust-v0.163.0；glab v1.123.0 真实二进制）
@@ -152,6 +167,7 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 5. 成功判定＝ `exit 0` **且** 见到 `turn.completed` **且** `-o` 文件**被新写入** **且** 自查 diff 非空
 6. **pin 版本**：codex 精确版本 + glab（若仍需要）明确版本 —— 现在 `npm install -g @openai/codex` 不 pin，等于内核可随时漂移
 7. webhook handler **绝不返回 5xx**；入队即 2xx，异常只落库
+8. 触发者权限校验（**评论命令与标签触发走同一闸门**）：`access_level >= 30`（Developer），可再叠加 `ALLOWED_TRIGGER_USERS` 白名单（AND）；用 `GET /projects/:id/members/all/:user_id` 查成员（含继承自 group 的成员），**404 一律拒绝**（若配置了白名单，白名单是实例管理员的逃生门）；成员关系缓存 60s
 
 ## 8. 代码现状
 
@@ -162,7 +178,40 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 - 触发只认 `open`/`reopen` → **打标签这个主要用法永远不触发**
 - handler 可能抛 500 → **累积到 GitLab 永久禁用 webhook**
 
-**结论**：v0 作为参考实现保留（`config.py` / `gitlab_client.py` / `db.py` 的部分逻辑可借鉴），主干按**端口 / 适配器**重写：
+### 8.1 M1 落地结果（2026-10-17）
+
+v0 中已被完全取代的 `gateway/db.py`、`gateway/worker.py` **已删除**；`gateway/gitlab_client.py` 暂时留作 M3 的接口参考（**注意它把 token 拼进 URL/argv，违反 §7 加固基线 5，不得沿用**），M3 用 `adapters/gitlab_client.py` 取代后删除。
+
+当前目录（`uv run pytest` → **278 项全绿**；`uv run ruff check` 干净）：
+
+```
+core/     states(状态机) · models · branch · policy(diff 策略) · context(context.md) ·
+          render(文案) · orchestrator(编排) · worker(租约/看门狗/恢复) · errors ·
+          layout(内部产物路径与 git 忽略规则)                                ← 纯逻辑，零 IO
+ports/    store · scm · vcs · agent · workspace · env · notifier              ← 仅 Protocol
+adapters/ sqlite_store(持久队列+状态机) · fakes(假 SCM/VCS/Agent/Env/Workspace/ProcessRunner) ·
+          git_cli(M2 真件) · uv_env(M2 真件) · codex_cli(M2 真件) · proc(子进程+脱敏) ·
+          local_workspace(M2 真件) · comment_notifier ·
+          unavailable(占位：未实现时明确失败，不静默放行)
+gateway/  app(HTTP) · config(pydantic-settings) · webhook(解析/幂等/闸门) ·
+          permissions(Developer 下限 + 白名单) · runtime(装配：build_runtime / build_production_runtime) ·
+          gitlab_client(v0 参考，待 M3 取代)
+tests/    unit(状态机/分支策略/diff 策略/文案/webhook 解析/权限/SQLite/配置/脱敏/
+               Python 版本规划/workspace 越界) ·
+          integration(假适配器全链路 / 崩溃恢复 / HTTP 层 / 真 git / 真 uv / 桩 codex 全链路)
+```
+
+M1 关键行为（全部有测试锁定）：
+
+- **幂等三层**：`delivery_key`（header 优先，否则 body 哈希）唯一 → `duplicate_delivery`；每个 issue 只允许一个活跃任务（部分唯一索引）→ `active_task_exists`；失败后重新打标签可重试。
+- **标签事件没有专门事件**：只认 Issue Hook `action="update"` + `changes.labels`，标签元素取 `title`；标签变更产生的 system note 被忽略。
+- **状态机守卫**：`queued→preparing→running→validating→pushing→opening_mr→succeeded` 逐条校验，终态不可再流转；`requeue` 只作为恢复边（重启/租约过期）。
+- **崩溃恢复**：启动时只把**已被领走**的在飞任务重置为 `queued`（排队中的不动）；租约过期由看门狗重排队，重试次数耗尽则判失败并走完整收尾（切标签 + 失败评论）。
+- **绝不 5xx**：除 secret 不匹配返回 401 外，一切情况都 200（含 `{"status":"error"}`），并有"适配器抛异常 / 存储抛异常 / 非法 JSON"三类回归测试。
+- **失败不静默**：切标签与状态评论都是 best-effort，失败不改变任务结论但写审计事件（`*_failed`）。
+- **回归修复**：`lstrip("./")` 曾把 `.env`、`.gitlab-ci.yml` 的前导点吃掉 → 禁改路径静默失效（已改为正规化函数 + 回归测试）；`REPO_WHITELIST=a,b` 曾被 pydantic-settings 当 JSON 解析直接崩（已加 `NoDecode` + 真环境变量测试）。
+
+**结论**：v0 作为参考实现保留（`config.py` / `gitlab_client.py` 的部分逻辑可借鉴），主干按**端口 / 适配器**重写：
 
 ```
 core/     TaskOrchestrator + 状态机        ← 纯逻辑，无 IO，可单测
@@ -172,25 +221,57 @@ adapters/ GitLabClient · GitCli · CodexCli（CODEX_BIN 可换成假 agent）·
 
 这样 CI 里能用 **假 SCM + 假 agent** 把整条链路端到端跑通，不需要 LLM、不需要真 GitLab。
 
+### 8.2 M2 落地结果（2026-10-17）
+
+**落地的四个真实适配器**（全部走端口，全部有测试）：
+
+| 适配器 | 文件 | 关键行为 |
+| --- | --- | --- |
+| `GitCli` | `adapters/git_cli.py` | `clone --branch <default> --single-branch` → `checkout -b ai-fix/N-slug`；**凭据只经 `GIT_ASKPASS` + `MINI_GITLAB_BOT_GIT_TOKEN` 环境变量**（argv / URL / 日志里都没有）；写 `.git/info/exclude`；`commit_all` 以 `base...HEAD` 提交数判定"零改动"（修掉 v0 `_has_commits` 恒真）；提交前做本地产物后置校验 |
+| `UvEnvPreparer` | `adapters/uv_env.py` | 网关侧联网阶段：按 `requires-python` 规划解释器（镜像预置 3.13 满足时**不联网补装**）→ `uv sync --no-progress [--frozen] [--python X]` → 校验 `.venv` → `UV_OFFLINE=1 uv run --no-sync python -c ''` 自检；日志落 `<LOG_DIR>/<task>/uv-sync.log` |
+| `CodexCli` | `adapters/codex_cli.py` | `codex exec --json --sandbox workspace-write --cd <job> -o <file> -c …`；安全项全部用 `-c` 钉死（优先级 30 > 项目配置 25）；启动前删 `.codex/`；子进程环境是**显式白名单**（GitLab token 不可能进入）；`--json` 落 `<LOG_DIR>/<task>/codex.jsonl` |
+| `LocalWorkspace` | `adapters/local_workspace.py` | `context.md` / `report.json` 原子写；路径必须落在 **job 目录**内（挡 `../` 与符号链接逃逸）；`TMPDIR` 指向 job 内（每 job 隔离）；终态清理 job 目录但拒绝删 jobs 根 |
+
+**四条件判定**（PLAN §7 基线 5，逐条有独立测试）：`exit 0` ∧ 见到 `turn.completed` ∧
+`-o` 文件**本次新写入**（失效语义：失败时既不写也不删）∧ `base...HEAD` diff 非空。
+
+**关键回归修复（M2 期间实测发现）**：
+
+- `git add -A -- . ':(exclude).venv'` 会因"显式添加被忽略路径"**直接退出 1** → 放弃 pathspec 排除，改为 `.git/info/exclude` + add 之后的 `_assert_no_job_artifacts` 后置校验（一旦发现 `.venv/` 等被暂存就明确失败，而不是把虚拟环境提交进 MR）。
+- `commit_all` 原逻辑"仅在零提交且脏时才提交" → agent 自己提交过时**遗留改动永远不会被提交** → 改为"脏就提交，再按提交数判定"。
+- `LocalWorkspace._resolve` 只校验 jobs 根 → `../其他任务/context.md` 能跨任务写文件 → 写入路径改为相对 **job 目录** 做包含检查。
+- 子进程被 SIGKILL 时退出码是 -9 → 统一归一化为 `-1` 并置 `timed_out=True`（消费者只需看 `timed_out`）。
+- 超时 / 取消（编排器 `wait_for`）都必须杀掉**整个进程组**，否则会留下孤儿 codex 进程。
+- 沙箱环境里 `uv` 的默认缓存目录 `~/.cache/uv` 在沙箱里不可写 → `UV_CACHE_DIR` 必须落在 workspace 内（配置项 `UV_CACHE_DIR`，默认 `WORK_DIR/.uv-cache`）。
+
+**诚实声明（M2 判据的第 2 条）**：判据要求"真 agent 至少一次端到端成功"，但本仓库的
+CI / 开发机**没有 codex 二进制、没有 LLM 端点**（内网环境前提），因此该条**未能在仓库内验证**。
+替代验证：桩 codex（真子进程、真 JSONL、真超时杀进程组）把网关侧契约全部跑穿 ——
+真正的"真 agent 首跑"必须在有内网模型端点的机器上补做，这是 M3 开始前唯一的前置动作。
+
 ## 9. 里程碑与待办
 
 | 里程碑 | 内容 | 完成判据 |
 | --- | --- | --- |
-| **M0 文档定案** | 本文 + `docs/research/` 归档 | ✅ 本轮完成 |
-| **M1 主干与触发器** | 端口/适配器骨架、SQLite 持久队列 + 状态机 + 心跳、webhook（secret/白名单/标签 update/评论命令/权限校验）、幂等、假 SCM + 假 agent 集成测试 | 单测 + 集成测试全绿；重复投递不重复处理、重启后任务恢复 |
-| **M2 Agent 链路** | job 工作目录与隔离、`context.md` 预取、uv 两阶段、分支创建、codex 调用（`-c` 钉死 + 删 `.codex/` + `--json` 落盘 + 四条件判定）、diff 策略校验 | 用假 agent 能跑通"改代码 → commit → 校验通过"；真 agent 至少一次端到端成功 |
+| **M0 文档定案** | 本文 + `docs/research/` 归档 | ✅ 完成 |
+| **M1 主干与触发器** | 端口/适配器骨架、SQLite 持久队列 + 状态机 + 心跳、webhook（secret/白名单/标签 update/评论命令/权限校验）、幂等、假 SCM + 假 agent 集成测试 | ✅ 完成：169 项测试全绿、ruff 干净；重复投递不重复处理、重启与租约过期后任务恢复，均有测试覆盖 |
+| **M2 Agent 链路** | job 工作目录与隔离、`context.md` 预取、uv 两阶段、分支创建、codex 调用（`-c` 钉死 + 删 `.codex/` + `--json` 落盘 + 四条件判定）、diff 策略校验 | ✅ 代码完成：278 项测试全绿。真件链路（本地 bare 仓 + 真 `uv sync` + 桩 codex）端到端跑通"改代码 → commit → 校验通过"，并覆盖四条件各条失败、禁改路径拦截、超时杀进程组、凭据不外泄；**"真 agent 至少一次成功"待内网机器补做**（本环境无 LLM 端点，见 §8.2） |
 | **M3 收尾与状态** | push（凭据不进 argv）、draft MR、单条状态评论原地编辑、标签状态机流转、失败升级 | 真 GitLab 上一次完整闭环 |
-| **M4 只读迷你 MCP** | 4 个只读工具、项目绑定、`read_api` token、输出截断 | agent 能按需取到 CI 日志；跨项目调用不可能 |
-| **M5 运维加固** | pin 版本、镜像瘦身（删 glab）、healthcheck、结构化日志、metrics、磁盘/保留策略、`/tasks` 加鉴权 | —— |
+| **M4 只读迷你 MCP** | 11 个只读工具（§3.3）、项目绑定、`read_api` token、输出截断 | agent 能按需取到 CI 日志；跨项目调用不可能 |
+| **M5 运维加固** | pin 版本、镜像重写（`Dockerfile` / `docker-compose.yml` 目前是 v0 遗留，已加警告头）、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权（v1 不暴露） | —— |
 
-**已明确推迟**：Renovate（F-1，不进本仓库）；GitHub 平台适配；非 Python 项目。
+> M5 镜像重写时必须补齐 M2 引入的运行时前提：基础镜像 **Python 3.13**、装 **uv** 与 **git**、
+> 建 **`LOG_DIR`（默认 `/data/logs`）** 与 `UV_CACHE_DIR` 卷、pin 死 codex 版本、
+> `COPY` 带上 `core/ ports/ adapters/ gateway/`（只 copy `gateway/` 会 ImportError）。
+
+**已明确推迟**：Renovate（F-1，不进本仓库）；GitHub 平台适配；非 Python 项目；仓库级配置 `.mini-gitlab-bot.yaml`（§12）；以及 `TODO.md` 里记录的两条需求（issue 自动回复并关闭、按 tag 自动补 release 文案）—— 都属于 v1 之后的功能扩充，不进 M1–M5。
 
 ## 10. 内网环境前提
 
 1. **codex 只能访问内网，不能访问外网**（这是硬约束，也是我们的安全边界）
 2. 内网自管基础设施：**GitLab**（自托管）、**kkRepo 内网源**；**kkRepo 可访问外网**
 3. **模型端点支持 `/v1/responses`**（已确认内网长期正常使用 Codex）
-4. 首期只支持 **Python 项目**，用 **uv** 管理环境
+4. 首期只支持 **Python 项目**，用 **uv** 管理环境；镜像预置 **CPython 3.13**，项目声明的其他版本由准备阶段从 kkRepo 补装
 
 ## 11. 参考资料
 
@@ -210,15 +291,19 @@ adapters/ GitLabClient · GitCli · CodexCli（CODEX_BIN 可换成假 agent）·
 - `mintlify.wiki/openai/codex`：自动生成站，记载了仓库中**不存在**的 flag（如 `--progress-cursor`），v1 文档曾误引
 - `about.gitlab.com` 的 glab MCP 博客：核查环境无法访问，全文未验证，本项目的结论不依赖它
 
-## 12. 开放问题（开工前需确认）
+## 12. 开放问题（2026-10-17 已全部定案）
 
-1. 只读 MCP 的 4 个工具是否够用？是否要加"按文件路径查最近提交者/历史"？
-2. 评论命令的权限下限：项目 Developer 及以上？是否还要限定到指定用户白名单？
-3. MR 描述模板、状态评论模板的最终文案
-4. 多项目配置：是否要支持每仓库的 `.mini-gitlab-bot.yml`（测试命令、目标分支、禁改路径、diff 上限）？
-5. `TARGET_BRANCH` 是全局一个还是按项目取默认分支？
-6. Python 版本范围（3.10–3.13？）与镜像里预置哪些版本
-7. 状态页 `/tasks` 是否需要鉴权 + 是否需要历史保留策略
+| # | 原问题 | 结论 |
+| --- | --- | --- |
+| 1 | 只读 MCP 工具是否够用 | **扩到 11 个**（见 §3.3）；补上 `list_pipeline_jobs` 与 `get_pipeline_test_report`，否则"读 CI 失败日志"这条链路是断的 |
+| 2 | 评论命令的权限下限 | **Developer (30) 及以上**；可叠加 `ALLOWED_TRIGGER_USERS` 白名单（AND）；**标签触发同闸门**；成员查询 `GET /projects/:id/members/all/:user_id`，404 拒绝；缓存 60s。详见 §7 加固基线 8 |
+| 3 | MR 描述 / 状态评论文案 | 采用 **uv release-notes 风格的中文模板**（分类式小节 + 风险与未决分区 + 隐藏标记原地编辑的状态评论），全文见 [`docs/templates.md`](docs/templates.md) |
+| 4 | 每仓库 `.mini-gitlab-bot.yaml` | **推迟**（属功能扩充，不进 v1）；v1 不做任何仓库级配置读取 |
+| 5 | `TARGET_BRANCH` | **v1 取项目 `default_branch`**（零配置、与 GitLab 同步）；将来由 `.mini-gitlab-bot.yaml` 的 `target_branch` 覆盖 |
+| 6 | Python 版本范围 | 镜像**只预置 3.13**；项目声明的其他版本在准备阶段从 kkRepo 补装，补装失败即 `ai-fix:failed` 并写明原因 |
+| 7 | `/tasks` 鉴权与保留策略 | **v1 不暴露 `/tasks`**（只留无信息 `/healthz`）；job 目录**终态即清**；codex 日志留 **14 天**；终态任务行留 **90 天**或每项目最近 200 条；带 token 的状态页留到 M5 |
+
+**新增推迟项**：仓库级配置文件 `.mini-gitlab-bot.yaml`（测试命令、`target_branch`、禁改路径、diff 上限）——见 #4、#5，作为 v1 之后的功能扩充。
 
 ---
 
