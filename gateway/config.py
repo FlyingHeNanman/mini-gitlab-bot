@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     #: 进 context.md 的 issue 评论条数（只取最新 N 条人类评论）
     issue_comment_limit: int = 20
 
+    # ---------- 只读迷你 MCP（M4，PLAN §3.3） ----------
+    #: 总开关；没有 GITLAB_READONLY_TOKEN 时自动失效（无法认证就没有意义）
+    mcp_enabled: bool = True
+    #: 启动 MCP server 的解释器（空 = 与网关同一个）
+    mcp_python: str = ""
+    #: 单次工具输出上限（字符）
+    mcp_max_output_chars: int = 20000
+
     # ---------- 任务与租约 ----------
     agent_timeout_sec: float = 1800.0
     lease_seconds: int = 60
@@ -124,6 +132,11 @@ class Settings(BaseSettings):
             warnings.append("GITLAB_TOKEN 未设置：SCM 退回占位实现，权限闸门会拒绝所有触发")
         if not self.model_name:
             warnings.append("MODEL_NAME 为空：codex 会用内网端点的默认模型（建议显式指定）")
+        if self.mcp_enabled and not self.gitlab_readonly_token:
+            warnings.append(
+                "GITLAB_READONLY_TOKEN 未设置：只读迷你 MCP 将被关闭"
+                "（agent 只能靠 clone 与 context.md）"
+            )
         if not self.codex_expected_version:
             warnings.append(
                 "CODEX_EXPECTED_VERSION 为空：内核版本可能漂移（PLAN §7 基线 6 要求 pin）"

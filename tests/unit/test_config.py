@@ -87,6 +87,23 @@ def test_startup_warnings_flag_missing_config() -> None:
     assert any("BOT_USERNAME" in item for item in warnings)
 
 
+def test_mcp_warning_when_readonly_token_missing() -> None:
+    settings = Settings(
+        webhook_secret="x", repo_whitelist=["a/b"], bot_username="bot", mcp_enabled=True
+    )
+    assert any("GITLAB_READONLY_TOKEN" in item for item in settings.startup_warnings())
+
+
+def test_no_mcp_warning_when_disabled() -> None:
+    settings = Settings(
+        webhook_secret="x",
+        repo_whitelist=["a/b"],
+        bot_username="bot",
+        mcp_enabled=False,
+    )
+    assert not any("GITLAB_READONLY_TOKEN" in item for item in settings.startup_warnings())
+
+
 def test_startup_warnings_flag_unpinned_kernel_and_missing_model() -> None:
     settings = Settings(
         webhook_secret="x",
@@ -115,6 +132,7 @@ def test_no_warnings_when_properly_configured() -> None:
         repo_whitelist=["a/b"],
         bot_username="bot",
         gitlab_token="glpat-x",
+        gitlab_readonly_token="glpat-readonly-x",
         model_name="glm-5",
         codex_expected_version="0.163.0",
     )

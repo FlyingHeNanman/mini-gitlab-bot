@@ -16,6 +16,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from adapters.codex_cli import CodexCli, CodexSettings
@@ -32,6 +33,7 @@ from adapters.unavailable import (
     UnavailableWorkspace,
 )
 from adapters.uv_env import UvEnvPreparer, UvSettings
+from core.mcp_spec import TOOL_NAMES
 from core.models import Task
 from core.orchestrator import OrchestratorConfig, TaskOrchestrator
 from core.policy import DiffPolicy
@@ -39,6 +41,9 @@ from core.worker import Worker
 from gateway.config import Settings
 
 logger = logging.getLogger(__name__)
+
+#: 仓库根（容器里是 /srv）：MCP 子进程靠它找到 `gateway` 包
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
 
 
 def _utcnow() -> datetime:
@@ -98,6 +103,9 @@ def build_runtime(
                 forbidden_paths=tuple(settings.forbidden_paths),
             ),
             ai_fix_label=settings.ai_fix_label,
+            mcp_tools=(
+                tuple(TOOL_NAMES) if settings.mcp_enabled and settings.gitlab_readonly_token else ()
+            ),
         ),
         clock=clock,
     )
@@ -190,6 +198,13 @@ def build_production_runtime(
                 config_overrides=tuple(settings.codex_config),
                 timeout_sec=settings.agent_timeout_sec,
                 expected_version=settings.codex_expected_version,
+                # 只读迷你 MCP：没有 read_api token 就不启用（绝不退而求其次用写 token）
+                mcp_enabled=settings.mcp_enabled and bool(settings.gitlab_readonly_token),
+                mcp_python=settings.mcp_python,
+                mcp_pythonpath=_REPO_ROOT,
+                mcp_token=settings.gitlab_readonly_token,
+                mcp_gitlab_url=settings.gitlab_url,
+                mcp_max_output_chars=settings.mcp_max_output_chars,
             ),
             log_dir=settings.log_dir,
         ),

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from core import layout
+from core.mcp_spec import TOOLS_HINT
 from core.models import IssueContext, Task
 from core.policy import DiffPolicy
 
@@ -28,6 +29,7 @@ def render_context(
     issue: IssueContext,
     *,
     policy: DiffPolicy,
+    mcp_tools: Sequence[str] = (),
     extra_sections: Sequence[str] = (),
     now: datetime | None = None,
 ) -> str:
@@ -95,6 +97,17 @@ def render_context(
         "这个文件只写报告，**不要**提交它（网关已把该目录加入 git 忽略）；网关读不到时"
         "会退化成使用你的最终消息，MR 描述会因此变粗糙。",
     ]
+
+    if mcp_tools:
+        # 只读 MCP 是"按需取上下文"的唯一通道（agent 无网络），必须告诉它有哪些工具
+        parts += [
+            "",
+            "## 只读上下文工具（MCP）",
+            "",
+            TOOLS_HINT.format(
+                count=len(mcp_tools), tools=" ".join(f"`{name}`" for name in mcp_tools)
+            ),
+        ]
 
     if extra_sections:
         parts += ["", "## 补充上下文", ""]

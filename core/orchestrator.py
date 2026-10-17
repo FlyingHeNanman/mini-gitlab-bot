@@ -49,6 +49,8 @@ class OrchestratorConfig:
     running_label: str = RUNNING_LABEL
     done_label: str = DONE_LABEL
     failed_label: str = FAILED_LABEL
+    #: 只读 MCP 可用工具名；空 = 没启用（就不会在 context.md 里告诉 agent 有这些工具）
+    mcp_tools: tuple[str, ...] = ()
 
 
 class TaskOrchestrator:
@@ -105,7 +107,13 @@ class TaskOrchestrator:
             await self._workspace.write_text(
                 workdir,
                 layout.RELATIVE_CONTEXT_PATH,
-                render_context(task, issue, policy=self._config.diff_policy, now=self._clock()),
+                render_context(
+                    task,
+                    issue,
+                    policy=self._config.diff_policy,
+                    mcp_tools=self._config.mcp_tools,
+                    now=self._clock(),
+                ),
             )
 
             # ---- 准备阶段（网关联网）：装依赖 + 离线自检（PLAN §4 两阶段模型）----

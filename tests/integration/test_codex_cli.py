@@ -101,10 +101,15 @@ if "--version" in argv:
 workdir = pathlib.Path(argv[argv.index("--cd") + 1])
 internal = workdir / ".mini-gitlab-bot"; internal.mkdir(parents=True, exist_ok=True)
 wanted = ["LLM_API_KEY", "GITLAB_TOKEN", "GITLAB_READONLY_TOKEN", "WEBHOOK_SECRET",
-          "GIT_ASKPASS", "MINI_GITLAB_BOT_GIT_TOKEN", "UV_OFFLINE", "UV_NO_SYNC", "PATH", "HOME"]
+          "GIT_ASKPASS", "MINI_GITLAB_BOT_GIT_TOKEN", "UV_OFFLINE", "UV_NO_SYNC", "PATH", "HOME",
+          "MINI_GITLAB_BOT_PROJECT_ID", "MINI_GITLAB_BOT_ISSUE_IID", "MCP_MAX_OUTPUT_CHARS"]
 probe = {name: (name in os.environ) for name in wanted}
 probe["TMPDIR"] = os.environ.get("TMPDIR", "")
 probe["api_key_matches"] = os.environ.get("LLM_API_KEY") == "sk-model-key-123456"
+# 只存前缀，避免把测试用的假 token 完整写进临时文件
+probe["readonly_prefix"] = (os.environ.get("GITLAB_READONLY_TOKEN") or "")[:14]
+probe["project_id"] = os.environ.get("MINI_GITLAB_BOT_PROJECT_ID", "")
+probe["issue_iid"] = os.environ.get("MINI_GITLAB_BOT_ISSUE_IID", "")
 (internal / "env-probe.json").write_text(json.dumps(probe), encoding="utf-8")
 pathlib.Path(argv[argv.index("-o") + 1]).write_text("ok", encoding="utf-8")
 print(json.dumps({"type": "turn.completed"}))
@@ -480,3 +485,118 @@ async def test_real_codex_binary_is_absent_in_ci(tmp_path: Path) -> None:
     """记录一个事实：CI/开发机没有真 codex，所以 M2 的验证靠桩二进制。"""
     assert shutil.which("codex") is None or isinstance(shutil.which("codex"), str)
     assert json.dumps({"type": "turn.completed"})  # 桩输出的形状就是 codex 的 JSONL 形状
+
+
+# --------------------------------------------------------------------------- #
+# 只读迷你 MCP 的接线（M4）
+# --------------------------------------------------------------------------- #
+
+READONLY = "glpat-readonly-mcp-token-123456"
+
+
+def build_mcp_cli(
+    tmp_path: Path, stub: str, *, enabled: bool = True, token: str = READONLY
+) -> CodexCli:
+    return CodexCli(
+        settings=CodexSettings(
+            bin=stub,
+            model_provider="internal",
+            model_name="glm-5",
+            mcp_enabled=enabled,
+            mcp_token=token,
+            mcp_gitlab_url="https://gitlab.example.com",
+            mcp_pythonpath="/srv",
+            mcp_max_output_chars=12345,
+        ),
+        log_dir=tmp_path / "logs",
+        environ={
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(tmp_path / "home"),
+            "LLM_API_KEY": "sk-model-key-123456",
+            # 网关环境里真实存在的东西：绝不能进 agent 环境
+            "GITLAB_TOKEN": "glpat-write-token-must-not-leak",
+        },
+    )
+
+
+async def run_cli(cli: CodexCli, tmp_path: Path) -> None:  # noqa: D103
+    stub = cli.settings.bin
+    workdir = make_workdir(tmp_path)
+    await cli.run(
+        make_task(tmp_path),
+        workdir=workdir,
+        context_path=workdir.context_path,
+        timeout_sec=60,
+    )
+    assert stub  # 只是为了让签名稳定
+
+
+async def test_mcp_is_configured_via_minus_c_with_env_vars(tmp_path: Path) -> None:
+    stub = write_stub(tmp_path, OK_BODY)
+    cli = build_mcp_cli(tmp_path, stub)
+    workdir = make_workdir(tmp_path)
+    await cli.run(
+        make_task(tmp_path), workdir=workdir, context_path=workdir.context_path, timeout_sec=60
+    )
+    argv = cli._runner.calls[0]["argv"]  # noqa: SLF001
+    joined = " ".join(argv)
+
+    assert 'mcp_servers.mini_gitlab.command="' in joined
+    assert 'mcp_servers.mini_gitlab.args=["-m", "gateway.mcp_readonly"]' in joined
+    # 硬约束：token 只以变量名出现（env_vars 按名透传），值绝不在 argv 里
+    assert "GITLAB_READONLY_TOKEN" in joined
+    assert READONLY not in joined
+    assert "glpat-write-token-must-not-leak" not in joined
+    # 工具白名单也显式下发，防止 codex 侧将来新增能力被默认打开
+    assert "mcp_servers.mini_gitlab.enabled_tools=" in joined
+    for tool in ("get_issue", "get_job_log", "get_pipeline_test_report"):
+        assert tool in joined
+
+
+async def test_mcp_env_carries_project_binding_and_only_the_readonly_token(
+    tmp_path: Path,
+) -> None:
+    """由**子进程自己**写下探针：记录里的值都被脱敏了，只有进程内观测才可信。"""
+    stub = write_stub(tmp_path, ENV_PROBE_BODY)
+    cli = build_mcp_cli(tmp_path, stub)
+    workdir = make_workdir(tmp_path)
+    await cli.run(
+        make_task(tmp_path), workdir=workdir, context_path=workdir.context_path, timeout_sec=60
+    )
+
+    probe = json.loads(
+        (Path(workdir.path) / ".mini-gitlab-bot" / "env-probe.json").read_text(encoding="utf-8")
+    )
+    assert probe["MINI_GITLAB_BOT_PROJECT_ID"] is True
+    assert probe["MINI_GITLAB_BOT_ISSUE_IID"] is True
+    assert probe["project_id"] == "42"
+    assert probe["issue_iid"] == "12"
+    assert probe["GITLAB_READONLY_TOKEN"] is True
+    assert probe["readonly_prefix"] == "glpat-readonly"
+    assert probe["MCP_MAX_OUTPUT_CHARS"] is True
+    # 写 token 无论如何都不许进 agent 环境
+    assert probe["GITLAB_TOKEN"] is False
+
+
+async def test_mcp_is_off_when_no_readonly_token(tmp_path: Path) -> None:
+    stub = write_stub(tmp_path, OK_BODY)
+    cli = build_mcp_cli(tmp_path, stub, token="")
+    workdir = make_workdir(tmp_path)
+    await cli.run(
+        make_task(tmp_path), workdir=workdir, context_path=workdir.context_path, timeout_sec=60
+    )
+    argv = " ".join(cli._runner.calls[0]["argv"])  # noqa: SLF001
+    env = cli._runner.calls[0]["env"]  # noqa: SLF001
+    assert "mcp_servers" not in argv
+    assert "GITLAB_READONLY_TOKEN" not in env
+    assert "MINI_GITLAB_BOT_PROJECT_ID" not in env
+
+
+async def test_mcp_can_be_disabled_explicitly(tmp_path: Path) -> None:
+    stub = write_stub(tmp_path, OK_BODY)
+    cli = build_mcp_cli(tmp_path, stub, enabled=False)
+    workdir = make_workdir(tmp_path)
+    await cli.run(
+        make_task(tmp_path), workdir=workdir, context_path=workdir.context_path, timeout_sec=60
+    )
+    assert "mcp_servers" not in " ".join(cli._runner.calls[0]["argv"])  # noqa: SLF001

@@ -1,7 +1,7 @@
 # mini-gitlab-bot 交接文档（v2 · 架构定案）
 
 > 用途：记录「内网 GitLab 仓库维护机器人」的最终架构、决策依据、已验证技术事实与实施计划，供后续接手者直接开工。
-> 更新日期：2026-10-17　状态：**M3 已完成（收尾与状态：真 GitLab 读写，319 项测试全绿），下一步 M4 只读迷你 MCP**；v0 骨架中被取代的部分已删除（§8.1）
+> 更新日期：2026-10-17　状态：**M4 已完成（只读迷你 MCP，374 项测试全绿），下一步 M5 运维加固**；v0 骨架中被取代的部分已删除（§8.1）
 > 事实核查详见 [`docs/research/`](docs/research/README.md)；本文只保留结论。
 
 ---
@@ -182,23 +182,25 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 
 v0 中已被完全取代的 `gateway/db.py`、`gateway/worker.py`、`gateway/gitlab_client.py` **均已删除**（最后一个是 M3 用 `adapters/gitlab_client.py` 取代后删的；它把 token 拼进 clone URL，违反 §7 加固基线 5）。
 
-当前目录（`uv run pytest` → **319 项全绿**；`uv run ruff check` 干净）：
+当前目录（`uv run pytest` → **374 项全绿**；`uv run ruff check` 干净）：
 
 ```
 core/     states(状态机) · models · branch · policy(diff 策略) · context(context.md) ·
           render(文案) · orchestrator(编排) · worker(租约/看门狗/恢复) · errors ·
-          layout(内部产物路径与 git 忽略规则)                                ← 纯逻辑，零 IO
+          layout(内部产物路径与 git 忽略规则) · mcp_spec(MCP 工具契约)        ← 纯逻辑，零 IO
 ports/    store · scm · vcs · agent · workspace · env · notifier              ← 仅 Protocol
 adapters/ sqlite_store(持久队列+状态机) · fakes(假 SCM/VCS/Agent/Env/Workspace/ProcessRunner) ·
           git_cli(M2 真件) · uv_env(M2 真件) · codex_cli(M2 真件) · proc(子进程+脱敏) ·
           local_workspace(M2 真件) · gitlab_client(M3 真件，python-gitlab) ·
           comment_notifier · unavailable(占位：未实现时明确失败，不静默放行)
 gateway/  app(HTTP) · config(pydantic-settings) · webhook(解析/幂等/闸门) ·
-          permissions(Developer 下限 + 白名单) · runtime(装配：build_runtime / build_production_runtime)
-tests/    unit(状态机/分支策略/diff 策略/文案/webhook 解析/权限/SQLite/配置/脱敏/
-               Python 版本规划/workspace 越界/SCM 分支时序) ·
+          permissions(Developer 下限 + 白名单) · runtime(装配：build_runtime / build_production_runtime) ·
+          mcp_readonly(只读迷你 MCP：stdio JSON-RPC + 11 个只读工具)
+tests/    unit(状态机/分支策略/diff 策略/文案/context/MCP 协议/webhook 解析/权限/SQLite/
+               配置/脱敏/Python 版本规划/workspace 越界/SCM 分支时序) ·
           integration(假适配器全链路 / 崩溃恢复 / HTTP 层 / 真 git / 真 uv / 真 GitLab API 桩 /
-              桩 codex 全链路 / 真 SCM 闭环) · stub_gitlab(可编程的本地 GitLab API v4)
+              桩 codex 全链路 / 真 SCM 闭环 / 真 MCP 子进程) ·
+          stub_gitlab(可编程的本地 GitLab API v4)
 ```
 
 M1 关键行为（全部有测试锁定）：
@@ -281,6 +283,53 @@ CI / 开发机**没有 codex 二进制、没有 LLM 端点**（内网环境前�
 客户端 + 桩服务端"，能证明请求形状、幂等、错误映射与凭据边界正确；但**真实实例上的
 group 权限继承、note 编辑权限、受保护分支策略**仍必须在目标环境首跑时确认。
 
+### 8.4 M4 落地结果（2026-10-17）
+
+**形态**：`python -m gateway.mcp_readonly`（stdio / JSON-RPC 2.0，一行一条消息，
+stdout 只留协议、日志一律走 stderr）。工具契约（11 个 schema + 环境变量名 + 提示文案）
+放在 `core/mcp_spec.py`，因为 `adapters/codex_cli.py` 要用它下发 `-c` 配置，而
+**适配器层不允许反向依赖 `gateway/`**（§2 分层）。
+
+| 硬约束（§3.3） | 落实方式 | 如何验证 |
+| --- | --- | --- |
+| 工具 schema 无 `project` 参数 | 项目/issue 由网关经 `MINI_GITLAB_BOT_PROJECT_ID` / `..._ISSUE_IID` 注入；未知参数**直接报错**（不静默忽略） | 真子进程测试：`get_issue(project=43)` 返回 `isError` 且**一个请求都没发出** |
+| 只读工具集 | 只有 GET；没有 create/update/delete 工具 | 桩 GitLab 断言所有请求方法都是 `GET` |
+| 独立 `read_api` token | 只认 `GITLAB_READONLY_TOKEN`；环境里出现写 token `GITLAB_TOKEN` → **退出码 3 拒绝启动** | 真子进程测试（退出码 + stderr） |
+| 输出截断 | 默认 20k 字符；`get_job_log` 从**尾部**截断（失败信息在末尾） | 契约测试 + 真子进程（`MCP_MAX_OUTPUT_CHARS=600`） |
+
+**Codex 侧接线**（`adapters/codex_cli.py`）：
+
+```
+-c mcp_servers.mini_gitlab.command="<python>"
+-c mcp_servers.mini_gitlab.args=["-m", "gateway.mcp_readonly"]
+-c mcp_servers.mini_gitlab.env_vars=["MINI_GITLAB_BOT_PROJECT_ID", ..., "GITLAB_READONLY_TOKEN"]
+-c mcp_servers.mini_gitlab.enabled_tools=["get_issue", ...]
+```
+
+全部走 `-c`（优先级 30 > 项目配置 25，§6 #5）；token **只以变量名出现**（`env_vars`
+按名透传，§6 #7），值留在子进程环境里 —— argv / 配置 / 日志里都没有凭据。
+
+**M4 期间实测发现并处理的问题**
+
+- `commits.list(path=...)` 里的 `path` 会被 python-gitlab 当成"自定义列表端点"，真的去请求
+  字面量 `app.py`（404）。改用 `http_list` 显式传查询参数。
+- python-gitlab 对数组属性发的是 `scope[]=failed`（不是 `scope=failed`）——桩服务必须两者都收，否则
+  "按状态过滤 job"在测试里静默失效。
+- 单个工具抛非预期异常会把整个 MCP 会话炸掉 → 在 `tools/call` 里兜底成 `isError` 结果
+  （模型能看到原因并调整；协议层不崩）。
+- `gitlab` 对象字段用 `getattr` 兜底：真实 API 一定返回的字段（`web_url`/`created_at`）
+  在桩里缺失时不该让工具 500。
+
+**测试策略（M4 新增）**：`tests/integration/test_mcp_tools.py` 真的 `subprocess.Popen`
+起一个 MCP server，按 MCP 协议一问一答，让它用真 HTTP 打桩 GitLab —— 覆盖 11 个工具、
+分页/截断、`README` 里那四条硬约束，以及"拒绝带写 token 启动"。
+
+**诚实声明（M4 判据）**：判据是"agent 能按需取到 CI 日志"。本仓库能验证的是**服务端**：
+真子进程、真协议、真 HTTP，`get_job_log` 能拿到失败尾部。**"真 codex 在真 GitLab 上主动
+调用这些工具"未能在仓库内验证**（无 codex 二进制、无 LLM 端点），必须与 M2/M3 的两项
+人工验证一起，在内网机器上补做。
+
+
 
 ## 9. 里程碑与待办
 
@@ -290,7 +339,7 @@ group 权限继承、note 编辑权限、受保护分支策略**仍必须在目�
 | **M1 主干与触发器** | 端口/适配器骨架、SQLite 持久队列 + 状态机 + 心跳、webhook（secret/白名单/标签 update/评论命令/权限校验）、幂等、假 SCM + 假 agent 集成测试 | ✅ 完成：169 项测试全绿、ruff 干净；重复投递不重复处理、重启与租约过期后任务恢复，均有测试覆盖 |
 | **M2 Agent 链路** | job 工作目录与隔离、`context.md` 预取、uv 两阶段、分支创建、codex 调用（`-c` 钉死 + 删 `.codex/` + `--json` 落盘 + 四条件判定）、diff 策略校验 | ✅ 代码完成：278 项测试全绿。真件链路（本地 bare 仓 + 真 `uv sync` + 桩 codex）端到端跑通"改代码 → commit → 校验通过"，并覆盖四条件各条失败、禁改路径拦截、超时杀进程组、凭据不外泄；**"真 agent 至少一次成功"待内网机器补做**（本环境无 LLM 端点，见 §8.2） |
 | **M3 收尾与状态** | push（凭据不进 argv）、draft MR、单条状态评论原地编辑、标签状态机流转、失败升级 | ✅ 代码完成：319 项测试全绿。`GitLabSCM` 用 python-gitlab 真发 HTTP，打到可编程的本地桩 GitLab（`tests/stub_gitlab.py`）验证请求形状与幂等；**"真 GitLab 实例上一次完整闭环"待内网机器补做**（见 §8.3） |
-| **M4 只读迷你 MCP** | 11 个只读工具（§3.3）、项目绑定、`read_api` token、输出截断 | agent 能按需取到 CI 日志；跨项目调用不可能 |
+| **M4 只读迷你 MCP** | 11 个只读工具（§3.3）、项目绑定、`read_api` token、输出截断 | ✅ 代码完成：374 项测试全绿。真子进程 + 真 stdio 协议 + 真 HTTP 验证了 11 个工具、`get_job_log` 取到失败日志、跨项目参数被拒、写 token 在场即拒绝启动（见 §8.4）；**"真 GitLab + 真 codex 下 agent 主动调用"待内网机器补做** |
 | **M5 运维加固** | pin 版本、镜像重写（`Dockerfile` / `docker-compose.yml` 目前是 v0 遗留，已加警告头）、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权（v1 不暴露） | —— |
 
 > M5 镜像重写时必须补齐 M2 引入的运行时前提：基础镜像 **Python 3.13**、装 **uv** 与 **git**、

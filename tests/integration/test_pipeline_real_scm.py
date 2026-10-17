@@ -257,6 +257,7 @@ async def test_production_runtime_wires_the_real_adapters(
         update={
             "gitlab_url": stub.url,
             "gitlab_token": DEFAULT_TOKEN,
+            "gitlab_readonly_token": "glpat-readonly-mcp",
             "work_dir": tmp_path / "work",
             "log_dir": tmp_path / "logs",
             "uv_cache_dir": tmp_path / "uv-cache",
@@ -272,6 +273,9 @@ async def test_production_runtime_wires_the_real_adapters(
         assert isinstance(runtime.env, UvEnvPreparer)
         # 权限查询真的走了网络（这是 webhook 闸门的关键依赖）
         assert await runtime.scm.get_member_access_level(PROJECT_ID, ALICE_ID) == 30
+        # 只读 MCP：有 read_api token 就启用，并且工具清单会进 context.md
+        assert runtime.agent.settings.mcp_enabled is True
+        assert len(runtime.orchestrator._config.mcp_tools) == 11  # noqa: SLF001
     finally:
         store.close()
 

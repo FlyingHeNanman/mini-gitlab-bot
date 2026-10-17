@@ -4,16 +4,17 @@
 
 给 Issue 打上 `ai-fix` 标签即自动闭环：入队 → 准备环境 → Codex 自主修复 → 网关校验 → push → 开 **draft MR** → 人工审批合并。
 
-> **状态：M3（收尾与状态）已完成** —— M1 主干 + M2 真实 agent 链路之上，接入了真实的
-> **`GitLabSCM`**（python-gitlab）：`members/all` 权限查询、issue 上下文预取（丢弃 system note）、
-> `add_labels`/`remove_labels`（不覆盖并发改标签）、状态评论**按 marker 原地编辑**、
-> draft MR（`Draft: ` 前缀 + 幂等：重试/并发不会开出第二条）、token 只走 `PRIVATE-TOKEN` 头。
-> `uv run pytest` → **319 项全绿**，其中 `tests/integration/test_gitlab_scm.py` 把**真 HTTP**
-> 打到本地桩 GitLab（`tests/stub_gitlab.py`），验证的是请求形状而不是 mock 的调用次数。
+> **状态：M4（只读迷你 MCP）已完成** —— M1 主干 + M2 agent 链路 + M3 真 GitLab 之上，
+> 落地了自研的**只读迷你 MCP**（`python -m gateway.mcp_readonly`，stdio JSON-RPC）：
+> 11 个只读工具（issue/搜索/关联 MR/MR 详情/pipeline/job 列表/CI 日志/测试报告/commit diff/
+> 最近提交/项目元信息），**工具 schema 里没有 `project` 参数**（项目由网关经环境变量绑定，
+> agent 物理上换不了项目），只认 `read_api` 只读 token，输出默认截断 20k 字符。
+> `uv run pytest` → **374 项全绿**：`tests/integration/test_mcp_tools.py` 会**真的起一个 MCP
+> 子进程**、按 MCP 协议对话、让它的请求打到本地桩 GitLab（`tests/stub_gitlab.py`）。
 > **设计的唯一事实来源是 [PLAN.md](PLAN.md)**，事实核查依据在 [docs/research/](docs/research/README.md)，
 > 文案模板在 [docs/templates.md](docs/templates.md)。
 >
-> 尚未落地：只读迷你 MCP（M4）、镜像加固（M5）、`/tasks` 暴露（v1 不做）。
+> 尚未落地：镜像加固（M5，`Dockerfile` 仍是 v0 遗留）、`/tasks` 暴露（v1 不做）。
 >
 > **诚实声明**：CI / 开发机没有真 GitLab 实例、没有 codex 二进制、没有 LLM 端点，所以
 > "真 GitLab 上一次完整闭环"与"真 agent 至少一次成功"这两条判据**无法在本仓库内验证**。
@@ -42,7 +43,7 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 
 - **agent 零凭据、零网络**：sandbox 用 `workspace-write`（网络默认关闭，写限工作目录），且不向 agent 暴露任何 token —— 这样即使 issue 正文携带 prompt injection，也没有外泄通道。
 - **网关独占 GitLab 读写**：单一写者，审计清晰；正确方向是"开只读的洞，把写权限攥在手里"。
-- **只读迷你 MCP（自研）**：给 agent 11 个只读工具（issue/评论/仓库树/文件内容/提交/分支/MR/diff/CI 作业与日志，工具清单见 [PLAN.md](PLAN.md) §3.3），**工具 schema 里没有 project 参数**（项目由网关注入，物理上无法跨项目），并使用独立的 `read_api` token。不采用 `glab mcp serve`（官方已弃用、217 个工具、无只读模式）。
+- **只读迷你 MCP（自研，已实现）**：给 agent 11 个只读工具（工具清单见 [PLAN.md](PLAN.md) §3.3），**工具 schema 里没有 project 参数**（项目/issue 由网关经环境变量绑定，物理上无法跨项目），并使用独立的 `read_api` token。不采用 `glab mcp serve`（官方已弃用、217 个工具、无只读模式）。MCP server 若在环境里看到写 token（`GITLAB_TOKEN`）会**拒绝启动**。
 - **两阶段执行**：装依赖在网关侧（可访问内网 kkRepo），跑 agent 时完全离线（`UV_OFFLINE=1 uv run --no-sync`）。
 - **人工兜底**：永远只开 draft MR，合并必须人工审批；MR 幂等（同一源分支不会开出第二条）。
 - **标签只做增量**：用 `add_labels`/`remove_labels`，绝不"读出全部标签再整体写回"（那会抹掉别人并发加的标签）。
@@ -68,7 +69,10 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | `WEBHOOK_SECRET` | GitLab Webhook 的 Secret token；**未配置时一律 401（fail closed）** | 空 |
 | `GITLAB_URL` | GitLab 实例地址 | `https://gitlab.example.com` |
 | `GITLAB_TOKEN` | 主 token（scope: `api`） | — |
-| `GITLAB_READONLY_TOKEN` | 只读 token（scope: `read_api`，供迷你 MCP，M4 使用） | — |
+| `GITLAB_READONLY_TOKEN` | 只读 token（scope: `read_api`，供迷你 MCP）。留空 = 关闭 MCP | — |
+| `MCP_ENABLED` | 只读迷你 MCP 总开关（无只读 token 时自动失效） | `true` |
+| `MCP_PYTHON` | 启动 MCP server 的解释器（空 = 与网关同一个） | 空 |
+| `MCP_MAX_OUTPUT_CHARS` | 单次工具输出上限，超出截断 | `20000` |
 | `GITLAB_TIMEOUT_SEC` | 单次 GitLab API 超时；5xx/连接错误自动重试 | `30` |
 | `ISSUE_COMMENT_LIMIT` | 进 `context.md` 的 issue 评论条数（只取最新 N 条人类评论） | `20` |
 | `REPO_WHITELIST` | 允许处理的项目，逗号分隔；**空 = 全部拒绝（fail closed）** | 空 |
@@ -134,7 +138,8 @@ DB_PATH=$PWD/.dev/tasks.db WORK_DIR=$PWD/.dev/work \
   `test_gitlab_scm`（python-gitlab 真 HTTP 打本地桩 GitLab：路径/查询参数/请求头/幂等）、
   `test_pipeline_real_adapters`（真 git + 真 `uv sync` + 桩 codex 端到端）、
   `test_pipeline_real_scm`（真 SCM + 假 VCS/agent 的完整闭环与权限闸门）、
-  `test_codex_cli`（桩 codex 真子进程：四条件、环境白名单、超时杀进程组）。
+  `test_mcp_tools`（**真 MCP 子进程** + 真 stdio 协议 + 真 HTTP 打桩 GitLab）、
+  `test_codex_cli`（桩 codex 真子进程：四条件、环境白名单、超时杀进程组、MCP 接线）。
   桩件之所以必须存在：CI 里没有 codex 二进制、没有 LLM 端点、没有 GitLab 实例，
   但**网关侧的契约**（argv、环境、HTTP 形状、四条件）必须被真子进程 / 真 HTTP 验证。
 

@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,14 @@ from adapters.proc import (
     minimal_env,
 )
 from core import layout
+from core.mcp_spec import (
+    ENV_GITLAB_URL,
+    ENV_ISSUE_IID,
+    ENV_MAX_OUTPUT_CHARS,
+    ENV_PROJECT_ID,
+    ENV_READONLY_TOKEN,
+    TOOL_NAMES,
+)
 from core.models import AgentResult, Task, Workdir
 
 logger = logging.getLogger(__name__)
@@ -51,6 +60,9 @@ TASK_PROMPT = (
 
 #: 模型 key 的环境变量名默认值（与 `env_key` 一致，见 PLAN §6 #8）
 DEFAULT_API_KEY_ENV = "LLM_API_KEY"
+
+#: 只读迷你 MCP 在 codex 配置里的名字
+MCP_SERVER_NAME = "mini_gitlab"
 
 #: 允许从网关环境透传给 codex 的变量名（其余一律不透传）
 _PASSTHROUGH_ENV: tuple[str, ...] = ("PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH")
@@ -69,6 +81,21 @@ class CodexSettings:
     timeout_sec: float = 1800.0
     expected_version: str = ""
     sandbox_mode: str = "workspace-write"
+    # ---- 只读迷你 MCP（PLAN §3.3 / M4）----
+    #: 关掉后 codex 完全看不到 MCP（没有 mcp_servers 配置）
+    mcp_enabled: bool = False
+    #: 启动 MCP server 的解释器（默认与网关同一个）
+    mcp_python: str = ""
+    #: `python -m` 的模块名
+    mcp_module: str = "gateway.mcp_readonly"
+    #: MCP server 里 `gitlab` 包的导入根（仓库根；容器里装成包时可为空）
+    mcp_pythonpath: str = ""
+    #: 传给 MCP server 的只读 token（`read_api`；绝不使用写 token）
+    mcp_token: str = ""
+    #: 与 `mcp_token` 配套的 GitLab 地址
+    mcp_gitlab_url: str = ""
+    #: 单次工具输出上限（MCP 侧也会读同名环境变量）
+    mcp_max_output_chars: int = 20000
 
 
 @dataclass
@@ -110,9 +137,12 @@ class CodexCli:
 
         context_name = context_path.rsplit("/", 1)[-1]
         argv = await self._build_argv(
-            workdir=workdir, context_name=context_name, last_message=str(last_message_path)
+            task=task,
+            workdir=workdir,
+            context_name=context_name,
+            last_message=str(last_message_path),
         )
-        env = self._child_env(tmp_dir=tmp_dir, workdir=workdir)
+        env = self._child_env(task=task, tmp_dir=tmp_dir, workdir=workdir)
 
         timeout = timeout_sec or self.settings.timeout_sec
         result = await self._runner.run(
@@ -157,7 +187,7 @@ class CodexCli:
     # ------------------------------------------------------------------ #
 
     async def _build_argv(
-        self, *, workdir: Workdir, context_name: str, last_message: str
+        self, *, task: Task, workdir: Workdir, context_name: str, last_message: str
     ) -> list[str]:
         sandbox = self.settings.sandbox_mode or "workspace-write"
         argv = [
@@ -185,10 +215,47 @@ class CodexCli:
         for override in self.settings.config_overrides:
             if override.strip():
                 argv += ["-c", override.strip()]
+        argv += self._mcp_argv(task)
         argv.append(TASK_PROMPT.format(context=context_name))
         return argv
 
-    def _child_env(self, *, tmp_dir: str, workdir: Workdir) -> dict[str, str]:
+    def _mcp_argv(self, task: Task) -> list[str]:
+        """只读迷你 MCP 的 `-c` 配置。
+
+        三条约束（PLAN §3.3 + §6 #7）：
+
+        * 项目/issue 通过**环境变量**注入（`env_vars` 按名透传），所以工具 schema 里
+          没有 project 参数，agent 物理上换不了项目；
+        * token 只以**变量名**出现（`env_vars=[...]`），值始终留在子进程环境里 ——
+          argv / 配置 / 日志里都不会出现凭据；
+        * 这些配置用 `-c` 下发（优先级 30 > 项目配置 25），避免被仓库内配置覆盖。
+        """
+        settings = self.settings
+        if not settings.mcp_enabled or not settings.mcp_token:
+            return []
+        python = settings.mcp_python or sys.executable
+        overrides = [
+            ("command", f'"{python}"'),
+            ("args", f'["-m", "{settings.mcp_module}"]'),
+            (
+                "env_vars",
+                "["
+                f'"{ENV_PROJECT_ID}", "{ENV_ISSUE_IID}", "{ENV_GITLAB_URL}", '
+                f'"{ENV_READONLY_TOKEN}", "{ENV_MAX_OUTPUT_CHARS}"'
+                "]",
+            ),
+        ]
+        argv: list[str] = []
+        for key, value in overrides:
+            argv += ["-c", f"mcp_servers.{MCP_SERVER_NAME}.{key}={value}"]
+        # 允许的工具集：显式列出，防止将来 codex 侧新增能力时被默认打开
+        argv += [
+            "-c",
+            f"mcp_servers.{MCP_SERVER_NAME}.enabled_tools={json.dumps(list(TOOL_NAMES))}",
+        ]
+        return argv
+
+    def _child_env(self, *, task: Task, tmp_dir: str, workdir: Workdir) -> dict[str, str]:
         """显式白名单 + 离线/沙箱相关变量。
 
         **绝不**整体继承 `os.environ`：网关进程里有 `GITLAB_TOKEN`、`WEBHOOK_SECRET`、
@@ -211,11 +278,35 @@ class CodexCli:
         }
         if api_key:
             extra[self.settings.api_key_env] = api_key
+        extra.update(self._mcp_env(task))
         return minimal_env(
             path=passthrough.get("PATH", "/usr/bin:/bin"),
             home=passthrough.get("HOME", str(Path(workdir.path).parent)),
             extra={**passthrough, **extra},
         )
+
+    def _mcp_env(self, task: Task) -> dict[str, str]:
+        """MCP server 需要的环境变量（`env_vars` 按名透传的就是这些）。
+
+        这里刻意只放**只读** token：`GITLAB_TOKEN`（写权限）绝不进入 agent 环境。
+        MCP server 自己还会二次校验（看到写 token 就拒绝启动）。
+        """
+        settings = self.settings
+        if not settings.mcp_enabled or not settings.mcp_token:
+            return {}
+        env = {
+            ENV_PROJECT_ID: str(task.project.project_id),
+            ENV_ISSUE_IID: str(task.issue_iid),
+            ENV_GITLAB_URL: settings.mcp_gitlab_url or "",
+            ENV_READONLY_TOKEN: settings.mcp_token,
+            ENV_MAX_OUTPUT_CHARS: str(settings.mcp_max_output_chars),
+        }
+        if settings.mcp_pythonpath:
+            base = self.environ.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                f"{settings.mcp_pythonpath}:{base}" if base else settings.mcp_pythonpath
+            )
+        return {key: value for key, value in env.items() if value}
 
     # ------------------------------------------------------------------ #
     # 内部

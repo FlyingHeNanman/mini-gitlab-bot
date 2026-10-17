@@ -39,6 +39,17 @@ class StubState:
     issues: dict[int, dict[str, Any]] = field(default_factory=dict)
     notes: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     merge_requests: list[dict[str, Any]] = field(default_factory=list)
+    pipelines: list[dict[str, Any]] = field(default_factory=list)
+    #: pipeline id -> job 列表
+    jobs: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    #: pipeline id -> test_report
+    test_reports: dict[int, dict[str, Any]] = field(default_factory=dict)
+    commits: list[dict[str, Any]] = field(default_factory=list)
+    #: sha -> diff 列表
+    commit_diffs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    languages: dict[str, float] = field(default_factory=dict)
+    #: job id -> 原始日志文本
+    job_logs: dict[int, str] = field(default_factory=dict)
     #: 记录每一次请求，便于断言"发了什么"
     requests: list[dict[str, Any]] = field(default_factory=list)
     #: 注入故障：[(方法, 路径正则, 状态码)]，匹配一次即消耗
@@ -76,6 +87,8 @@ class StubState:
             "state": state,
             "web_url": f"https://gitlab.example.com/{self.project.path}/-/issues/{iid}",
             "author": {"username": author, "name": author},
+            "created_at": "2026-10-17T09:00:00.000Z",
+            "updated_at": "2026-10-17T09:30:00.000Z",
         }
         self.notes.setdefault(iid, [])
 
@@ -91,6 +104,89 @@ class StubState:
             }
         )
         return note_id
+
+    def add_pipeline(
+        self,
+        pipeline_id: int = 900,
+        *,
+        ref: str = "main",
+        status: str = "failed",
+        sha: str = "a" * 40,
+        jobs: list[dict[str, Any]] | None = None,
+        test_report: dict[str, Any] | None = None,
+    ) -> int:
+        self.pipelines.append(
+            {
+                "id": pipeline_id,
+                "iid": pipeline_id,
+                "project_id": self.project.project_id,
+                "ref": ref,
+                "status": status,
+                "sha": sha,
+                "source": "push",
+                "web_url": (
+                    f"https://gitlab.example.com/{self.project.path}/-/pipelines/{pipeline_id}"
+                ),
+                "duration": 42,
+            }
+        )
+        self.jobs[pipeline_id] = list(jobs or [])
+        if test_report is not None:
+            self.test_reports[pipeline_id] = test_report
+        return pipeline_id
+
+    def add_job(
+        self,
+        pipeline_id: int = 900,
+        job_id: int = 5001,
+        *,
+        name: str = "pytest",
+        status: str = "failed",
+        stage: str = "test",
+        failure_reason: str | None = "script_failure",
+        log: str = "",
+    ) -> int:
+        self.jobs.setdefault(pipeline_id, []).append(
+            {
+                "id": job_id,
+                "pipeline_id": pipeline_id,
+                "name": name,
+                "stage": stage,
+                "status": status,
+                "failure_reason": failure_reason,
+                "web_url": (f"https://gitlab.example.com/{self.project.path}/-/jobs/{job_id}"),
+                "allow_failure": False,
+                "duration": 12.5,
+            }
+        )
+        if log:
+            self.job_logs[job_id] = log
+        return job_id
+
+    def add_commit(
+        self,
+        sha: str,
+        *,
+        title: str = "fix: parse_labels",
+        message: str | None = None,
+        author: str = "alice",
+        created_at: str = "2026-10-17T09:00:00.000Z",
+        diffs: list[dict[str, Any]] | None = None,
+    ) -> str:
+        self.commits.append(
+            {
+                "id": sha,
+                "short_id": sha[:8],
+                "title": title,
+                "message": message or title,
+                "author_name": author,
+                "author_email": f"{author}@example.com",
+                "created_at": created_at,
+                "web_url": f"https://gitlab.example.com/{self.project.path}/-/commit/{sha}",
+            }
+        )
+        self.commit_diffs[sha] = list(diffs or [])
+        return sha
 
     def find_note(self, iid: int, note_id: int) -> dict[str, Any] | None:
         return next((note for note in self.notes.get(iid, []) if note["id"] == note_id), None)
@@ -122,6 +218,16 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
         return data if isinstance(data, dict) else {}
+
+    def _send_raw(
+        self, status: int, text: str, content_type: str = "text/plain; charset=utf-8"
+    ) -> None:
+        body = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send(self, status: int, payload: Any, extra_headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -195,8 +301,14 @@ class _Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "id": project.project_id,
+                    "name": project.path.rsplit("/", 1)[-1],
+                    "path": project.path.rsplit("/", 1)[-1],
                     "path_with_namespace": project.path,
                     "default_branch": project.default_branch,
+                    "description": "演示项目",
+                    "topics": ["demo"],
+                    "visibility": "internal",
+                    "web_url": f"https://gitlab.example.com/{project.path}",
                 },
             )
             return
@@ -215,6 +327,22 @@ class _Handler(BaseHTTPRequestHandler):
                     "access_level": self.state.members[user_id],
                 },
             )
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/issues", route)
+        if match and method == "GET":
+            items = list(self.state.issues.values())
+            search = query.get("search", [None])[0]
+            if search:
+                items = [
+                    item
+                    for item in items
+                    if search.lower() in (item["title"] + " " + item["description"]).lower()
+                ]
+            if "state" in query:
+                items = [item for item in items if item["state"] == query["state"][0]]
+            limit = int(query.get("per_page", ["20"])[0])
+            self._send(200, items[:limit])
             return
 
         match = re.fullmatch(rf"/projects/{pid}/issues/(\d+)", route)
@@ -329,6 +457,142 @@ class _Handler(BaseHTTPRequestHandler):
                 if key in body:
                     mr[key] = str(body[key])
             self._send(200, mr)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/pipelines", route)
+        if match and method == "GET":
+            items = [
+                item
+                for item in self.state.pipelines
+                if ("ref" not in query or item["ref"] == query["ref"][0])
+                and ("status" not in query or item["status"] == query["status"][0])
+            ]
+            limit = int(query.get("per_page", ["20"])[0])
+            self._send(200, items[:limit])
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/pipelines/(\d+)", route)
+        if match and method == "GET":
+            pipeline_id = int(match.group(1))
+            pipeline = next(
+                (item for item in self.state.pipelines if item["id"] == pipeline_id), None
+            )
+            if pipeline is None:
+                self._send(404, {"message": "404 Not found"})
+                return
+            self._send(200, pipeline)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/pipelines/(\d+)/jobs", route)
+        if match and method == "GET":
+            pipeline_id = int(match.group(1))
+            jobs = list(self.state.jobs.get(pipeline_id, []))
+            raw_scope = query.get("scope") or query.get("scope[]") or []
+            if raw_scope:
+                # python-gitlab 对数组属性发 `scope[]=failed`；真实 GitLab 两者都收
+                wanted = set(",".join(raw_scope).split(","))
+                jobs = [job for job in jobs if job["status"] in wanted]
+            limit = int(query.get("per_page", ["20"])[0])
+            self._send(200, jobs[:limit])
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/pipelines/(\d+)/test_report", route)
+        if match and method == "GET":
+            pipeline_id = int(match.group(1))
+            report = self.state.test_reports.get(pipeline_id)
+            if report is None:
+                self._send(404, {"message": "404 Not found"})
+                return
+            self._send(200, report)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/jobs/(\d+)", route)
+        if match and method == "GET":
+            job_id = int(match.group(1))
+            job = next(
+                (
+                    item
+                    for jobs in self.state.jobs.values()
+                    for item in jobs
+                    if item["id"] == job_id
+                ),
+                None,
+            )
+            if job is None:
+                self._send(404, {"message": "404 Not found"})
+                return
+            self._send(200, job)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/jobs/(\d+)/trace", route)
+        if match and method == "GET":
+            job_id = int(match.group(1))
+            if job_id not in self.state.job_logs:
+                self._send(404, {"message": "404 Not found"})
+                return
+            self._send_raw(200, self.state.job_logs[job_id])
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/repository/commits", route)
+        if match and method == "GET":
+            items = list(self.state.commits)
+            if "ref_name" in query:
+                ref = query["ref_name"][0]
+                if ref in {item["id"] for item in items} | {item["short_id"] for item in items}:
+                    items = [item for item in items if item["id"] == ref or item["short_id"] == ref]
+            limit = int(query.get("per_page", ["20"])[0])
+            self._send(200, items[:limit])
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/repository/commits/([0-9a-f]{{6,40}})/diff", route)
+        if match and method == "GET":
+            sha = match.group(1)
+            diffs = next(
+                (value for key, value in self.state.commit_diffs.items() if key.startswith(sha)),
+                None,
+            )
+            if diffs is None:
+                self._send(404, {"message": "404 Not found"})
+                return
+            self._send(200, diffs)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/repository/commits/([0-9a-f]{{6,40}})", route)
+        if match and method == "GET":
+            sha = match.group(1)
+            commit = next((item for item in self.state.commits if item["id"].startswith(sha)), None)
+            if commit is None:
+                self._send(404, {"message": "404 Not found"})
+                return
+            self._send(200, commit)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/issues/(\d+)/related_merge_requests", route)
+        if match and method == "GET":
+            self._send(200, list(self.state.merge_requests))
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/merge_requests/(\d+)", route)
+        if match and method == "GET":
+            iid = int(match.group(1))
+            mr = next((item for item in self.state.merge_requests if item["iid"] == iid), None)
+            if mr is None:
+                self._send(404, {"message": "404 Not found"})
+                return
+            self._send(200, mr)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/merge_requests/(\d+)/notes", route)
+        if match and method == "GET":
+            iid = int(match.group(1))
+            mr = next((item for item in self.state.merge_requests if item["iid"] == iid), None)
+            notes = list((mr or {}).get("notes") or [])
+            self._send(200, notes)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/languages", route)
+        if match and method == "GET":
+            self._send(200, self.state.languages)
             return
 
         self._send(404, {"message": f"404 Not found: {method} {route}"})
