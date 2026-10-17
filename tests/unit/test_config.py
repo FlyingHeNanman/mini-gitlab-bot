@@ -134,6 +134,7 @@ def test_no_warnings_when_properly_configured() -> None:
         gitlab_token="glpat-x",
         gitlab_readonly_token="glpat-readonly-x",
         model_name="glm-5",
+        model_base_url="http://llm.internal/v1",
         codex_expected_version="0.163.0",
     )
     assert settings.startup_warnings() == []

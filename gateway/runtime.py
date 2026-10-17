@@ -222,6 +222,7 @@ def build_production_runtime(
                 bin=settings.codex_bin,
                 model_provider=settings.model_provider,
                 model_name=settings.model_name,
+                model_base_url=settings.model_base_url,
                 api_key_env=settings.api_key_env,
                 config_overrides=tuple(settings.codex_config),
                 timeout_sec=settings.agent_timeout_sec,

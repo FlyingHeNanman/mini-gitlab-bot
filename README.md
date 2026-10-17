@@ -83,7 +83,8 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | 终态任务 | SQLite `tasks` + `task_events` | 90 天 | 排队中/在飞的任务无论多老都保留 |
 | 孤儿 job 目录 | `<WORK_DIR>/task-*` | 1 天 | 只删 `task-` 前缀且不属于任何非终态任务 |
 
-**容器**：`docker compose up -d --build`（先 `cp .env.example .env`）。镜像非 root（uid 10001）、
+**容器**：`docker compose up -d --build`（先 `cp .env.example .env`，至少填
+`WEBHOOK_SECRET` / `GITLAB_TOKEN` / `GITLAB_READONLY_TOKEN` / `REPO_WHITELIST` / `MODEL_BASE_URL`）。镜像非 root（uid 10001）、
 `cap_drop: ALL`、`no-new-privileges`、`init: true`、双卷（`/data` 存 SQLite+日志、`/work` 存 job 目录+uv 缓存）。
 
 ## 配置项（环境变量）
@@ -106,6 +107,7 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | `MIN_ACCESS_LEVEL` | 触发者角色下限（Developer = 30） | `30` |
 | `MEMBER_CACHE_TTL_SEC` | 成员权限查询缓存秒数 | `60` |
 | `MODEL_PROVIDER` / `MODEL_NAME` | Codex 的 model_provider / 模型名 | `internal` / — |
+| `MODEL_BASE_URL` | 内网模型端点（必须支持 Responses API）。非空时网关用 `-c` 把 provider 定义钉死（含 `wire_api="responses"`），镜像不需要预置 codex 配置 | 空 |
 | `CODEX_BIN` / `API_KEY_ENV` | codex 可执行文件 / 模型 key 所在的**变量名**（值只进子进程环境） | `codex` / `LLM_API_KEY` |
 | `CODEX_EXPECTED_VERSION` | 期望的 codex 版本；不符时启动告警（PLAN §7 基线 6） | 空 |
 | `CODEX_CONFIG` | 追加的 `-c key=value`，逗号分隔（如内网 `base_url` / `wire_api="responses"`） | 空 |

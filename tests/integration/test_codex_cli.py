@@ -531,6 +531,51 @@ async def run_cli(cli: CodexCli, tmp_path: Path) -> None:  # noqa: D103
     assert stub  # 只是为了让签名稳定
 
 
+async def test_model_provider_definition_is_pinned_via_minus_c(tmp_path: Path) -> None:
+    """镜像里不预置 codex 配置：provider 端点与 wire_api 全部由 `-c` 下发。"""
+    stub = write_stub(tmp_path, OK_BODY)
+    cli = CodexCli(
+        settings=CodexSettings(
+            bin=stub,
+            model_provider="internal",
+            model_name="glm-5",
+            model_base_url="http://llm.internal/v1",
+            api_key_env="LLM_API_KEY",
+        ),
+        log_dir=tmp_path / "logs",
+        environ={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    workdir = make_workdir(tmp_path)
+    await cli.run(
+        make_task(tmp_path), workdir=workdir, context_path=workdir.context_path, timeout_sec=60
+    )
+    argv = cli._runner.calls[0]["argv"]  # noqa: SLF001
+    joined = " ".join(argv)
+    assert 'model_providers.internal.base_url="http://llm.internal/v1"' in joined
+    # PLAN §6 #1：wire_api=chat 已是硬错误，必须由我们钉死为 responses
+    assert 'model_providers.internal.wire_api="responses"' in joined
+    assert 'model_providers.internal.env_key="LLM_API_KEY"' in joined
+    assert "chat" not in joined
+    # 端点不是凭据，进 argv 没问题；但模型 key 的值绝不能进
+    assert "sk-model-key" not in joined
+
+
+async def test_no_provider_definition_without_base_url(tmp_path: Path) -> None:
+    stub = write_stub(tmp_path, OK_BODY)
+    cli = CodexCli(
+        settings=CodexSettings(bin=stub, model_provider="internal", model_name="glm-5"),
+        log_dir=tmp_path / "logs",
+        environ={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    workdir = make_workdir(tmp_path)
+    await cli.run(
+        make_task(tmp_path), workdir=workdir, context_path=workdir.context_path, timeout_sec=60
+    )
+    joined = " ".join(cli._runner.calls[0]["argv"])  # noqa: SLF001
+    # 没给 MODEL_BASE_URL 就不替操作者编造端点；wire_api 也不会被我们钉死
+    assert 'wire_api="responses"' not in joined
+
+
 async def test_mcp_is_configured_via_minus_c_with_env_vars(tmp_path: Path) -> None:
     stub = write_stub(tmp_path, OK_BODY)
     cli = build_mcp_cli(tmp_path, stub)

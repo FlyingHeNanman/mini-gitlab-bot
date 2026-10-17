@@ -1,8 +1,11 @@
 """仓库自带的 codex 用户级配置不能自相矛盾地违反我们自己的安全基线。
 
-`codex/config.toml` 会被挂进容器当 `~/.codex/config.toml`（优先级 20，是**我们自己的**
-输入，所以不能用"项目配置不可信"那套来推脱）。v0 版本在这里挂 `glab mcp serve` 并把
-机器人 `api` token 写进 `env`，等于把 GitLab 写权限交给 agent —— 这个测试就是防止它复活。
+`codex/config.toml` 是**本地跑 codex 时的示例配置**（M5 起镜像不再预置它：provider 端点
+与 `wire_api` 都由网关用 `-c` 下发，见 `adapters/codex_cli.py`）。它仍是我们自己的输入，
+所以不能用"项目配置不可信"那套来推脱。
+
+v0 版本在这里挂 `glab mcp serve` 并把机器人 `api` token 写进 `env`，等于把 GitLab 写权限
+交给 agent —— 这个测试就是防止它复活。
 """
 
 from __future__ import annotations

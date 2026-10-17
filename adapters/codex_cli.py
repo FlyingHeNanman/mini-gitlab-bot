@@ -75,6 +75,8 @@ class CodexSettings:
     bin: str = "codex"
     model_provider: str = ""
     model_name: str = ""
+    #: 内网模型端点；非空时用 `-c` 把 provider 定义钉死（含 wire_api=responses）
+    model_base_url: str = ""
     api_key_env: str = DEFAULT_API_KEY_ENV
     #: 追加的 `-c key=value`（例如 `model_providers.internal.base_url=...`）
     config_overrides: tuple[str, ...] = ()
@@ -212,6 +214,20 @@ class CodexCli:
             argv += ["-c", f'model_provider="{self.settings.model_provider}"']
         if self.settings.model_name:
             argv += ["-c", f'model="{self.settings.model_name}"']
+        if self.settings.model_base_url:
+            # PROVIDER 定义也走 `-c`（优先级 30）：镜像里不需要任何预置 codex 配置，
+            # 且 `wire_api` 不会被用户级/项目级配置改成已废弃的 "chat"（PLAN §6 #1）
+            provider = self.settings.model_provider or "internal"
+            argv += [
+                "-c",
+                f'model_providers.{provider}.name="内网模型端点"',
+                "-c",
+                f'model_providers.{provider}.base_url="{self.settings.model_base_url}"',
+                "-c",
+                f'model_providers.{provider}.wire_api="responses"',
+                "-c",
+                f'model_providers.{provider}.env_key="{self.settings.api_key_env}"',
+            ]
         for override in self.settings.config_overrides:
             if override.strip():
                 argv += ["-c", override.strip()]

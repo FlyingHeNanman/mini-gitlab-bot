@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     codex_bin: str = "codex"
     model_provider: str = "internal"
     model_name: str = ""
+    #: 内网模型端点（OpenAI Responses 兼容，如 http://llm-gateway:8000/v1）。
+    #: 配了它，网关就用 `-c` 把 provider 定义钉进 codex（优先级 30），镜像里不需要任何
+    #: 预置的 codex 配置；留空 = 依赖操作者自己提供的 CODEX_CONFIG 或用户级配置。
+    model_base_url: str = ""
     api_key_env: str = "LLM_API_KEY"  # 只传变量名给 codex（`env_key`），值只进子进程环境
     codex_expected_version: str = ""  # pin 版本自检（PLAN §7 基线 6）
     #: 追加的 `-c key=value`，例如 `model_providers.internal.base_url=https://llm.internal/v1`
@@ -148,6 +152,10 @@ class Settings(BaseSettings):
             warnings.append("WORKER_ENABLED=true 但没有活跃 webhook：任务只能来自手工入队")
         if not self.gitlab_token:
             warnings.append("GITLAB_TOKEN 未设置：SCM 退回占位实现，权限闸门会拒绝所有触发")
+        if not self.model_base_url:
+            warnings.append(
+                "MODEL_BASE_URL 为空：codex 的 provider 端点只能来自 CODEX_CONFIG 或用户级配置"
+            )
         if not self.model_name:
             warnings.append("MODEL_NAME 为空：codex 会用内网端点的默认模型（建议显式指定）")
         if self.mcp_enabled and not self.gitlab_readonly_token:

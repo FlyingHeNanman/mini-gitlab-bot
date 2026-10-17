@@ -350,6 +350,12 @@ stdout 只留协议、日志一律走 stderr）。工具契约（11 个 schema +
   （uvicorn 在 import 之后才应用它的 logging 配置）。
 - `/readyz` 的"卡死"判定最初用 `datetime.now()`，与注入时钟不一致、测试不可控 → 改为用 `runtime.clock()`（单一时钟源）。
 
+**M5 收尾复盘时补的一个漏洞**：重写镜像时删掉了 v0 的 `COPY codex/config.toml`，但当时网关
+并没有用 `-c` 下发 provider 端点 —— 也就是说**镜像里没有任何 `[model_providers.internal]`
+定义，开箱即跑不起来**。已改为由 `MODEL_BASE_URL` 驱动、四个 provider 键全部用 `-c` 下发
+（`name` / `base_url` / `wire_api="responses"` / `env_key`），镜像不再预置 codex 配置；
+`codex/config.toml` 降级为"本地跑 codex 的示例"。
+
 **诚实声明（M5 判据）**：镜像与 compose 只做了**静态**校验 —— 本仓库环境没有 docker
 也没有外网，`uv`/codex 的 pin 版本是否可拉取、`@openai/codex` 的 npm 包装是否还需其它
 运行时依赖，都必须在那台构建机上实际 `docker compose build` 一次才能确认。这是上线前
