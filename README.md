@@ -4,21 +4,21 @@
 
 给 Issue 打上 `ai-fix` 标签即自动闭环：入队 → 准备环境 → Codex 自主修复 → 网关校验 → push → 开 **draft MR** → 人工审批合并。
 
-> **状态：M2（Agent 链路）已完成** —— 在 M1（主干 / 触发器 / 持久队列 / 崩溃恢复）之上接入了
-> **真实适配器**：`GitCli`（clone → 建分支 → 兜底 commit → diff → push，凭据只走 `GIT_ASKPASS`）、
-> `UvEnvPreparer`（网关侧联网 `uv sync` + 离线自检）、`CodexCli`（`-c` 钉死安全项、删 `.codex/`、
-> `--json` 落盘、四条件判定、超时杀进程组）、`LocalWorkspace`（job 目录内的原子写 + 独立 `TMPDIR`）。
-> `uv run pytest` → **278 项全绿**（含真 git 本地仓库、真 uv 离线 `uv sync`、桩 codex 的端到端链路）。
+> **状态：M3（收尾与状态）已完成** —— M1 主干 + M2 真实 agent 链路之上，接入了真实的
+> **`GitLabSCM`**（python-gitlab）：`members/all` 权限查询、issue 上下文预取（丢弃 system note）、
+> `add_labels`/`remove_labels`（不覆盖并发改标签）、状态评论**按 marker 原地编辑**、
+> draft MR（`Draft: ` 前缀 + 幂等：重试/并发不会开出第二条）、token 只走 `PRIVATE-TOKEN` 头。
+> `uv run pytest` → **319 项全绿**，其中 `tests/integration/test_gitlab_scm.py` 把**真 HTTP**
+> 打到本地桩 GitLab（`tests/stub_gitlab.py`），验证的是请求形状而不是 mock 的调用次数。
 > **设计的唯一事实来源是 [PLAN.md](PLAN.md)**，事实核查依据在 [docs/research/](docs/research/README.md)，
 > 文案模板在 [docs/templates.md](docs/templates.md)。
 >
-> 尚未落地：**真 GitLab 读写**（M3：push 之后的开 MR / 状态评论 / 标签流转仍是 `UnavailableSCM` 占位）、
-> 只读迷你 MCP（M4）、镜像加固（M5）。也就是说：现在**能真 clone、真跑 codex、真 push 分支**，
-> 但收尾会以"适配器未实现"明确失败并留痕（绝不静默）。
+> 尚未落地：只读迷你 MCP（M4）、镜像加固（M5）、`/tasks` 暴露（v1 不做）。
 >
-> **诚实声明**：CI / 开发机没有 codex 二进制、没有 LLM 端点，所以"真 agent 至少一次端到端成功"这条
-> M2 判据**无法在本仓库内验证**；测试用的是一个桩 codex（真子进程、真 JSONL、真超时），
-> 它验证的是**网关这一侧的契约**（argv、环境、四条件、日志、凭据不外泄）。
+> **诚实声明**：CI / 开发机没有真 GitLab 实例、没有 codex 二进制、没有 LLM 端点，所以
+> "真 GitLab 上一次完整闭环"与"真 agent 至少一次成功"这两条判据**无法在本仓库内验证**。
+> 仓库内做的是等价验证：真 git 本地仓库 + 真 `uv sync` + 桩 codex + 桩 GitLab API（真 HTTP）。
+> 真机首跑仍需在有内网模型端点与 GitLab 的环境里补做（见 [PLAN.md](PLAN.md) §8.2/§8.3）。
 
 ## 架构
 
@@ -44,7 +44,8 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 - **网关独占 GitLab 读写**：单一写者，审计清晰；正确方向是"开只读的洞，把写权限攥在手里"。
 - **只读迷你 MCP（自研）**：给 agent 11 个只读工具（issue/评论/仓库树/文件内容/提交/分支/MR/diff/CI 作业与日志，工具清单见 [PLAN.md](PLAN.md) §3.3），**工具 schema 里没有 project 参数**（项目由网关注入，物理上无法跨项目），并使用独立的 `read_api` token。不采用 `glab mcp serve`（官方已弃用、217 个工具、无只读模式）。
 - **两阶段执行**：装依赖在网关侧（可访问内网 kkRepo），跑 agent 时完全离线（`UV_OFFLINE=1 uv run --no-sync`）。
-- **人工兜底**：永远只开 draft MR，合并必须人工审批。
+- **人工兜底**：永远只开 draft MR，合并必须人工审批；MR 幂等（同一源分支不会开出第二条）。
+- **标签只做增量**：用 `add_labels`/`remove_labels`，绝不"读出全部标签再整体写回"（那会抹掉别人并发加的标签）。
 - **失败不静默**：状态用单条评论原地编辑，标签流转 `ai-fix:running` → `ai-fix:done` / `ai-fix:failed`。
 
 ## 快速开始（GitLab 侧准备）
@@ -68,6 +69,8 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | `GITLAB_URL` | GitLab 实例地址 | `https://gitlab.example.com` |
 | `GITLAB_TOKEN` | 主 token（scope: `api`） | — |
 | `GITLAB_READONLY_TOKEN` | 只读 token（scope: `read_api`，供迷你 MCP，M4 使用） | — |
+| `GITLAB_TIMEOUT_SEC` | 单次 GitLab API 超时；5xx/连接错误自动重试 | `30` |
+| `ISSUE_COMMENT_LIMIT` | 进 `context.md` 的 issue 评论条数（只取最新 N 条人类评论） | `20` |
 | `REPO_WHITELIST` | 允许处理的项目，逗号分隔；**空 = 全部拒绝（fail closed）** | 空 |
 | `AI_FIX_LABEL` | 触发标签 | `ai-fix` |
 | `BOT_USERNAME` | 机器人自己的用户名，用于忽略自己产生的事件 | 空 |
@@ -123,14 +126,17 @@ DB_PATH=$PWD/.dev/tasks.db WORK_DIR=$PWD/.dev/work \
 - `ports/` 只有 `Protocol`；`adapters/` 是真实现 + 假实现（**假实现也是契约的一部分**）。
 - `gateway/` 只做 HTTP / 配置 / 权限 / 装配，不含业务判断。
 
-测试策略分三层：
+测试策略分三层（真件越来越多）：
 
 - **单元**：状态机、解析规则、配置、脱敏、Python 版本规划、workspace 越界防护。
 - **集成（假件）**：`FakeSCM + FakeVCS + FakeAgent + FakeWorkspace` 把整条流水线（含失败路径、租约恢复、崩溃重启）跑穿。
-- **集成（真件，M2 起）**：`test_git_cli`（本地 bare 仓真 clone/commit/diff/push）、
-  `test_pipeline_real_adapters`（真 git + 真 `uv sync` + **桩 codex** 端到端）、
+- **集成（真件）**：`test_git_cli`（本地 bare 仓真 clone/commit/diff/push）、
+  `test_gitlab_scm`（python-gitlab 真 HTTP 打本地桩 GitLab：路径/查询参数/请求头/幂等）、
+  `test_pipeline_real_adapters`（真 git + 真 `uv sync` + 桩 codex 端到端）、
+  `test_pipeline_real_scm`（真 SCM + 假 VCS/agent 的完整闭环与权限闸门）、
   `test_codex_cli`（桩 codex 真子进程：四条件、环境白名单、超时杀进程组）。
-  桩 codex 之所以必须存在：CI 里没有 codex 二进制也没有 LLM 端点，但**网关侧的契约**必须被真子进程验证。
+  桩件之所以必须存在：CI 里没有 codex 二进制、没有 LLM 端点、没有 GitLab 实例，
+  但**网关侧的契约**（argv、环境、HTTP 形状、四条件）必须被真子进程 / 真 HTTP 验证。
 
 ## License
 

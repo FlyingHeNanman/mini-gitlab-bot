@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     gitlab_url: str = "https://gitlab.example.com"
     gitlab_token: str = ""
     gitlab_readonly_token: str = ""  # M4：只读迷你 MCP 专用
+    gitlab_timeout_sec: float = 30.0
+    #: 进 context.md 的 issue 评论条数（只取最新 N 条人类评论）
+    issue_comment_limit: int = 20
 
     # ---------- 任务与租约 ----------
     agent_timeout_sec: float = 1800.0
@@ -118,7 +121,7 @@ class Settings(BaseSettings):
                 "只读成员可以让机器人往仓库推分支（权限提升）"
             )
         if not self.gitlab_token:
-            warnings.append("GITLAB_TOKEN 未设置：M3 起无法 clone / push / 开 MR")
+            warnings.append("GITLAB_TOKEN 未设置：SCM 退回占位实现，权限闸门会拒绝所有触发")
         if not self.model_name:
             warnings.append("MODEL_NAME 为空：codex 会用内网端点的默认模型（建议显式指定）")
         if not self.codex_expected_version:

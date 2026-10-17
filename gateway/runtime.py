@@ -5,9 +5,9 @@
 * `build_runtime(settings, ...)`：**测试入口**。未显式注入的适配器一律落在
   `Unavailable*` 占位上 —— 网关能启动、webhook 立刻 2xx，但任务会在明确位置失败并
   写明"适配器未实现"，绝不静默卡住（PLAN 成功标准 3）。
-* `build_production_runtime(settings)`：**生产入口**，装上 M2 的真实适配器
-  （`GitCli` + `CodexCli` + `LocalWorkspace` + `UvEnvPreparer`）；GitLab 读写仍是
-  占位的 `UnavailableSCM`，等 M3 换成 `GitLabClient`。
+* `build_production_runtime(settings)`：**生产入口**，装上真实适配器
+  （`GitLabSCM` + `GitCli` + `CodexCli` + `LocalWorkspace` + `UvEnvPreparer`）。
+  没有 `GITLAB_TOKEN` 时 SCM 退回 `UnavailableSCM`（fail closed，但服务仍可启动）。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from typing import Any
 from adapters.codex_cli import CodexCli, CodexSettings
 from adapters.comment_notifier import CommentNotifier
 from adapters.git_cli import GitCli
+from adapters.gitlab_client import GitLabSCM, GitLabSettings
 from adapters.local_workspace import LocalWorkspace
 from adapters.sqlite_store import SqliteStore
 from adapters.unavailable import (
@@ -147,11 +148,24 @@ def build_production_runtime(
     scm: Any | None = None,
     clock: Callable[[], datetime] = _utcnow,
 ) -> Runtime:
-    """生产装配：M2 的真实适配器（git / codex / uv / 本地工作目录）。
+    """生产装配：真实适配器（GitLab / git / codex / uv / 本地工作目录）。
 
-    `scm` 仍是 `UnavailableSCM`（M3 落地 GitLab 读写）—— 也就是说：**现在就能真 clone、
-    真跑 codex、真 push 分支**，但开 MR 与状态评论会以"适配器未实现"失败并留痕。
+    没有 `GITLAB_TOKEN` 时退回 `UnavailableSCM`：网关仍能启动、webhook 仍立刻 2xx，
+    但权限闸门会 fail-closed（fail closed 优于拿空 token 去撞 API）。
     """
+    if scm is None:
+        if settings.gitlab_token:
+            scm = GitLabSCM(
+                settings=GitLabSettings(
+                    url=settings.gitlab_url,
+                    token=settings.gitlab_token,
+                    timeout_sec=settings.gitlab_timeout_sec,
+                    comment_limit=settings.issue_comment_limit,
+                )
+            )
+        else:
+            logger.warning("GITLAB_TOKEN 未设置：SCM 退回占位实现，任务会在权限闸门被拒绝")
+            scm = UnavailableSCM()
     workspace = LocalWorkspace(settings.work_dir)
     return build_runtime(
         settings,

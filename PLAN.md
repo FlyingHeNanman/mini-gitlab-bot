@@ -1,7 +1,7 @@
 # mini-gitlab-bot 交接文档（v2 · 架构定案）
 
 > 用途：记录「内网 GitLab 仓库维护机器人」的最终架构、决策依据、已验证技术事实与实施计划，供后续接手者直接开工。
-> 更新日期：2026-10-17　状态：**M2 已完成（Agent 链路：真 git / 真 uv / codex 调用，278 项测试全绿），下一步 M3 收尾与状态**；v0 骨架中被取代的部分已删除（§8.1）
+> 更新日期：2026-10-17　状态：**M3 已完成（收尾与状态：真 GitLab 读写，319 项测试全绿），下一步 M4 只读迷你 MCP**；v0 骨架中被取代的部分已删除（§8.1）
 > 事实核查详见 [`docs/research/`](docs/research/README.md)；本文只保留结论。
 
 ---
@@ -180,9 +180,9 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 
 ### 8.1 M1 落地结果（2026-10-17）
 
-v0 中已被完全取代的 `gateway/db.py`、`gateway/worker.py` **已删除**；`gateway/gitlab_client.py` 暂时留作 M3 的接口参考（**注意它把 token 拼进 URL/argv，违反 §7 加固基线 5，不得沿用**），M3 用 `adapters/gitlab_client.py` 取代后删除。
+v0 中已被完全取代的 `gateway/db.py`、`gateway/worker.py`、`gateway/gitlab_client.py` **均已删除**（最后一个是 M3 用 `adapters/gitlab_client.py` 取代后删的；它把 token 拼进 clone URL，违反 §7 加固基线 5）。
 
-当前目录（`uv run pytest` → **278 项全绿**；`uv run ruff check` 干净）：
+当前目录（`uv run pytest` → **319 项全绿**；`uv run ruff check` 干净）：
 
 ```
 core/     states(状态机) · models · branch · policy(diff 策略) · context(context.md) ·
@@ -191,14 +191,14 @@ core/     states(状态机) · models · branch · policy(diff 策略) · contex
 ports/    store · scm · vcs · agent · workspace · env · notifier              ← 仅 Protocol
 adapters/ sqlite_store(持久队列+状态机) · fakes(假 SCM/VCS/Agent/Env/Workspace/ProcessRunner) ·
           git_cli(M2 真件) · uv_env(M2 真件) · codex_cli(M2 真件) · proc(子进程+脱敏) ·
-          local_workspace(M2 真件) · comment_notifier ·
-          unavailable(占位：未实现时明确失败，不静默放行)
+          local_workspace(M2 真件) · gitlab_client(M3 真件，python-gitlab) ·
+          comment_notifier · unavailable(占位：未实现时明确失败，不静默放行)
 gateway/  app(HTTP) · config(pydantic-settings) · webhook(解析/幂等/闸门) ·
-          permissions(Developer 下限 + 白名单) · runtime(装配：build_runtime / build_production_runtime) ·
-          gitlab_client(v0 参考，待 M3 取代)
+          permissions(Developer 下限 + 白名单) · runtime(装配：build_runtime / build_production_runtime)
 tests/    unit(状态机/分支策略/diff 策略/文案/webhook 解析/权限/SQLite/配置/脱敏/
-               Python 版本规划/workspace 越界) ·
-          integration(假适配器全链路 / 崩溃恢复 / HTTP 层 / 真 git / 真 uv / 桩 codex 全链路)
+               Python 版本规划/workspace 越界/SCM 分支时序) ·
+          integration(假适配器全链路 / 崩溃恢复 / HTTP 层 / 真 git / 真 uv / 真 GitLab API 桩 /
+              桩 codex 全链路 / 真 SCM 闭环) · stub_gitlab(可编程的本地 GitLab API v4)
 ```
 
 M1 关键行为（全部有测试锁定）：
@@ -247,7 +247,40 @@ adapters/ GitLabClient · GitCli · CodexCli（CODEX_BIN 可换成假 agent）·
 **诚实声明（M2 判据的第 2 条）**：判据要求"真 agent 至少一次端到端成功"，但本仓库的
 CI / 开发机**没有 codex 二进制、没有 LLM 端点**（内网环境前提），因此该条**未能在仓库内验证**。
 替代验证：桩 codex（真子进程、真 JSONL、真超时杀进程组）把网关侧契约全部跑穿 ——
-真正的"真 agent 首跑"必须在有内网模型端点的机器上补做，这是 M3 开始前唯一的前置动作。
+真正的"真 agent 首跑"必须在有内网模型端点的机器上补做；M3 之后它与"真 GitLab 首跑"一起
+构成 v1 上线前必须完成的两项人工验证（见 §8.3 末段）。
+
+### 8.3 M3 落地结果（2026-10-17）
+
+**`adapters/gitlab_client.py`（`GitLabSCM`，python-gitlab 8.x）**
+
+| 端口方法 | 真实语义 | 关键细节 |
+| --- | --- | --- |
+| `default_branch` | `GET /projects/:id` | 目标分支取项目 `default_branch`（PLAN §12 #5），零配置 |
+| `get_member_access_level` | `GET /projects/:id/members/all/:uid` | **`members/all` 才含 group 继承成员**；404 → `None` → 闸门拒绝 |
+| `load_issue_context` | `GET /projects/:id/issues/:iid` + `/notes` | 只取最新 N 条人类评论（倒序翻页、命中即停）；`system=True` 的 note 全部丢弃 |
+| `set_labels` | `PUT /issues/:iid` with `add_labels` / `remove_labels` | 增量改，不整体写回（避免抹掉并发加的标签） |
+| `upsert_comment` | `PUT /issues/:iid/notes/:nid` | 按 marker 找**机器人自己那条**，原地编辑；找不到才 POST |
+| `create_draft_mr` | `POST /merge_requests` | `Draft: ` 标题前缀（API 无 draft 参数）；`remove_source_branch=false`（保留分支作审计） |
+
+**M3 期间实测发现并处理的问题**
+
+- `python-gitlab` 8.x 的迭代翻页靠 **`Link` 响应头**（RFC 5988），不是 `X-Next-Page`。桩服务最初只发后者 → 状态评论一旦被挤出第一页就"找不到、于是新开一条"。已按真实 GitLab 形状补 `Link`，并加回归测试（150 条评论之后仍能命中并原地编辑）。
+- `retry_transient_errors=True` 会让注入的 500 被自动重试（测试里表现为"以为没抛错"）。这本身是想要的行为：单独测重试，另开测试关掉重试验证 5xx 映射。
+- MR 创建必须**先查后建 + 409 兜底**：重试/崩溃恢复会用到同一分支，只 create 会得到"Another open merge request already exists"。
+- `_update_mr` 只在 title/description 真的变了才 `save()`，否则每次重试都产生一条多余写请求。
+
+**测试策略（M3 新增）**：`tests/stub_gitlab.py` 是一个真实 HTTP 的 GitLab API v4 桩
+（可注入故障、记录每个请求的路径/查询/头/body）。`tests/integration/test_gitlab_scm.py`
+用它验证**请求形状**；`tests/integration/test_pipeline_real_scm.py` 用它跑完整闭环
+（成功 → draft MR + 单条评论原地编辑 + 标签流转；失败 → `ai-fix:failed` 且不开 MR；
+权限 → Developer 放行 / Reporter 拒绝 / 非成员拒绝 / GitLab 5xx 仍是 200 且不入队）。
+
+**诚实声明（M3 判据）**：判据是"真 GitLab 上一次完整闭环"。本仓库的 CI / 开发机
+**没有可用的 GitLab 实例**，因此该条**未能在仓库内验证**。替代验证是"真 HTTP + 真 python-gitlab
+客户端 + 桩服务端"，能证明请求形状、幂等、错误映射与凭据边界正确；但**真实实例上的
+group 权限继承、note 编辑权限、受保护分支策略**仍必须在目标环境首跑时确认。
+
 
 ## 9. 里程碑与待办
 
@@ -256,7 +289,7 @@ CI / 开发机**没有 codex 二进制、没有 LLM 端点**（内网环境前�
 | **M0 文档定案** | 本文 + `docs/research/` 归档 | ✅ 完成 |
 | **M1 主干与触发器** | 端口/适配器骨架、SQLite 持久队列 + 状态机 + 心跳、webhook（secret/白名单/标签 update/评论命令/权限校验）、幂等、假 SCM + 假 agent 集成测试 | ✅ 完成：169 项测试全绿、ruff 干净；重复投递不重复处理、重启与租约过期后任务恢复，均有测试覆盖 |
 | **M2 Agent 链路** | job 工作目录与隔离、`context.md` 预取、uv 两阶段、分支创建、codex 调用（`-c` 钉死 + 删 `.codex/` + `--json` 落盘 + 四条件判定）、diff 策略校验 | ✅ 代码完成：278 项测试全绿。真件链路（本地 bare 仓 + 真 `uv sync` + 桩 codex）端到端跑通"改代码 → commit → 校验通过"，并覆盖四条件各条失败、禁改路径拦截、超时杀进程组、凭据不外泄；**"真 agent 至少一次成功"待内网机器补做**（本环境无 LLM 端点，见 §8.2） |
-| **M3 收尾与状态** | push（凭据不进 argv）、draft MR、单条状态评论原地编辑、标签状态机流转、失败升级 | 真 GitLab 上一次完整闭环 |
+| **M3 收尾与状态** | push（凭据不进 argv）、draft MR、单条状态评论原地编辑、标签状态机流转、失败升级 | ✅ 代码完成：319 项测试全绿。`GitLabSCM` 用 python-gitlab 真发 HTTP，打到可编程的本地桩 GitLab（`tests/stub_gitlab.py`）验证请求形状与幂等；**"真 GitLab 实例上一次完整闭环"待内网机器补做**（见 §8.3） |
 | **M4 只读迷你 MCP** | 11 个只读工具（§3.3）、项目绑定、`read_api` token、输出截断 | agent 能按需取到 CI 日志；跨项目调用不可能 |
 | **M5 运维加固** | pin 版本、镜像重写（`Dockerfile` / `docker-compose.yml` 目前是 v0 遗留，已加警告头）、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权（v1 不暴露） | —— |
 
