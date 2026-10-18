@@ -86,7 +86,14 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | 孤儿 job 目录 | `<WORK_DIR>/task-*` | 1 天 | 只删 `task-` 前缀且不属于任何非终态任务 |
 
 **容器**：`docker compose up -d --build`（先 `cp .env.example .env`，至少填
-`WEBHOOK_SECRET` / `GITLAB_TOKEN` / `GITLAB_READONLY_TOKEN` / `REPO_WHITELIST` / `MODEL_BASE_URL`）。镜像非 root（uid 10001）、
+`WEBHOOK_SECRET` / `GITLAB_TOKEN` / `GITLAB_READONLY_TOKEN` / `REPO_WHITELIST` / `MODEL_BASE_URL`）。
+
+> ⚠️ **必须给容器 `seccomp=unconfined`**（compose 里已配好）：codex 的 Linux 沙箱用
+> bubblewrap 创建**非特权 user namespace**，Docker 默认 seccomp 会拒绝，表现为
+> `bwrap: No permissions to create a new namespace` —— agent 一条命令都执行不了，
+> 任务会在"diff 为空"处失败。宿主机若已放开 userns 且自带 seccomp 配置，可自行去掉。
+> 另：容器内如果 GitLab 用 `host.docker.internal` 回调不通，改用 docker bridge 网关 IP
+> （`docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'`）。镜像非 root（uid 10001）、
 `cap_drop: ALL`、`no-new-privileges`、`init: true`、双卷（`/data` 存 SQLite+日志、`/work` 存 job 目录+uv 缓存）。
 
 ## 配置项（环境变量）

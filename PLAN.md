@@ -356,6 +356,21 @@ stdout 只留协议、日志一律走 stderr）。工具契约（11 个 schema +
 （`name` / `base_url` / `wire_api="responses"` / `env_key`），镜像不再预置 codex 配置；
 `codex/config.toml` 降级为"本地跑 codex 的示例"。
 
+**M5 镜像已在真机 build 并跑通（2026-10-18）**：`docker build` 成功（1.16 GB），
+镜像内 `codex 0.157.1` / `uv 0.5.14` / `git` 齐全，以 uid 10001 运行；用镜像起容器 +
+真 codex + 真 GitLab 跑完了完整闭环（issue #13 → MR !7），agent 还自己补了两个测试
+（`4 passed`）。**真机暴露并修复的三个镜像缺陷**：
+
+1. `COPY --from=<image>:${VAR}` 不支持变量展开 → 改成先 `FROM ... AS uv` 再 `COPY --from=uv`
+2. 直接 `COPY` 那个指向 `codex.js` 的符号链接会被解引用成普通文件，包内相对 import 失效
+   （`EsmLoader` 报错）→ 显式 `ln -s`
+3. 构建期 `uv sync` 以 root 写 `/work/.uv-cache`，运行期 bot 写不进去
+   （`Permission denied ... sdists-v6/.git`）→ 构建期缓存放 `/tmp`，并 `chown -R bot:bot /app /data /work`
+
+4. **运行期硬性要求**：codex 的 bwrap 沙箱需要非特权 user namespace，Docker 默认 seccomp
+   会拒绝（`bwrap: No permissions to create a new namespace`）→ compose 必须
+   `seccomp=unconfined` + `apparmor=unconfined`，否则 agent 无法执行任何命令。
+
 **诚实声明（M5 判据）**：镜像与 compose 只做了**静态**校验 —— 本仓库环境没有 docker
 也没有外网，`uv`/codex 的 pin 版本是否可拉取、`@openai/codex` 的 npm 包装是否还需其它
 运行时依赖，都必须在那台构建机上实际 `docker compose build` 一次才能确认。这是上线前

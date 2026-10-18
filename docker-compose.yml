@@ -51,6 +51,13 @@ services:
     stop_grace_period: 60s
     security_opt:
       - no-new-privileges:true
+      # codex 的 Linux 沙箱用 bubblewrap 创建非特权 user namespace；
+      # Docker 默认 seccomp 会拒绝，导致 agent 一条命令都执行不了
+      # （实测报 `bwrap: No permissions to create a new namespace`）。
+      # 这是运行 codex 的硬性要求；如果宿主机已开 userns 且自定义了 seccomp，
+      # 可以去掉这两行。
+      - seccomp=unconfined
+      - apparmor=unconfined
     cap_drop:
       - ALL
     logging:

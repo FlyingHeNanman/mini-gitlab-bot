@@ -36,6 +36,10 @@ E2E_TASK_TIMEOUT="${E2E_TASK_TIMEOUT:-300}"
 E2E_STUB_AGENT="${E2E_STUB_AGENT:-1}"
 
 GITLAB="http://127.0.0.1:${E2E_PORT}"
+# GitLab 容器回调宿主机：优先用 docker bridge 网关（host.docker.internal 在部分环境解析成
+# IPv6 ULA，uvicorn 只监听 IPv4，会连不上 —— 实测踩过）
+WEBHOOK_HOST="${E2E_WEBHOOK_HOST:-$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)}"
+WEBHOOK_HOST="${WEBHOOK_HOST:-host.docker.internal}"
 GROUP_PATH="bot-e2e"
 PROJECT_PATH="demo"
 PROJECT_FULL="$GROUP_PATH/$PROJECT_PATH"
@@ -358,9 +362,9 @@ printf '  标签：ai-fix / ai-fix:running / ai-fix:done / ai-fix:failed\n'
 api PUT "/application/settings?allow_local_requests_from_web_hooks_and_services=true" >/dev/null ||
   die "无法开启 allow_local_requests_from_web_hooks_and_services（需要 admin token）"
 api POST "/projects/$PROJECT_ID/hooks" \
-  --data "{\"url\":\"http://host.docker.internal:${E2E_BOT_PORT}/webhook/gitlab\",\"token\":\"$WEBHOOK_SECRET\",\"issues_events\":true,\"note_events\":true,\"enable_ssl_verification\":false}" \
+  --data "{\"url\":\"http://${WEBHOOK_HOST}:${E2E_BOT_PORT}/webhook/gitlab\",\"token\":\"$WEBHOOK_SECRET\",\"issues_events\":true,\"note_events\":true,\"enable_ssl_verification\":false}" \
   >/dev/null || die "创建 webhook 失败"
-printf '  webhook → http://host.docker.internal:%s/webhook/gitlab\n' "$E2E_BOT_PORT"
+printf '  webhook → http://%s:%s/webhook/gitlab\n' "$WEBHOOK_HOST" "$E2E_BOT_PORT"
 
 # ---------------------------------------------------------------- 5. 起 bot
 step "5/8 启动网关（宿主进程，生产装配）"

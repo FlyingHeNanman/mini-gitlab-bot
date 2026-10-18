@@ -72,7 +72,9 @@ def test_runs_as_non_root() -> None:
 def test_copies_every_package_and_declares_volumes() -> None:
     text = dockerfile()
     for package in ("core", "ports", "adapters", "gateway"):
-        assert re.search(rf"^COPY {package} \./{package}$", text, re.MULTILINE), package
+        assert re.search(rf"^COPY --chown=bot:bot {package} \./{package}$", text, re.MULTILINE), (
+            package
+        )
     assert "mkdir -p /app /data/logs /work" in text
     assert "LOG_DIR=/data/logs" in text
     assert "UV_CACHE_DIR=/work/.uv-cache" in text
@@ -82,7 +84,9 @@ def test_has_healthcheck_and_python_module_entrypoint() -> None:
     text = dockerfile()
     assert "HEALTHCHECK" in text
     assert "/healthz" in text
-    assert 'CMD ["python", "-m", "uvicorn", "gateway.app:app"' in text
+    # PORT 可覆盖（容器里换端口不用重建镜像）
+    assert "os.environ.get('PORT','8080')" in text
+    assert 'CMD ["sh", "-c", "exec python -m uvicorn gateway.app:app' in text
 
 
 def test_compose_has_one_service_with_healthcheck_and_volumes() -> None:
@@ -102,6 +106,9 @@ def test_compose_has_one_service_with_healthcheck_and_volumes() -> None:
 def test_compose_hardens_the_container() -> None:
     text = compose()
     assert "no-new-privileges:true" in text
+    # codex 的 bwrap 需要非特权 user namespace，Docker 默认 seccomp 会挡住
+    assert "seccomp=unconfined" in text
+    assert "apparmor=unconfined" in text
     assert "cap_drop:" in text
     assert "init: true" in text
     assert "stop_grace_period" in text
