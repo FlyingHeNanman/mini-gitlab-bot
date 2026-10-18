@@ -17,4 +17,5 @@ work/
 # 本地试跑留下的目录（README 里的 .dev、烟测的 .smoke*、任务工作目录）
 .dev/
 .smoke*/
+.e2e/
 .sandbox/

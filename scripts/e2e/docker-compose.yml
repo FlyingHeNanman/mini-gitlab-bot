@@ -1,0 +1,73 @@
+# =============================================================================
+# 本机端到端用的 GitLab CE（只给 scripts/e2e/run.sh 用，不要拿它当生产部署）
+# =============================================================================
+# 资源门槛：4 GB 内存起步（推荐 8 GB）、10 GB+ 磁盘、首次启动 3–6 分钟。
+# 已关闭 prometheus / 压低 sidekiq 与 puma，尽量少占内存。
+#
+# 关键点：GitLab 容器要能把 webhook 投回**宿主机**上的 bot，所以：
+#   * gitlab 服务必须带 extra_hosts: host.docker.internal:host-gateway
+#   * external_url 用 http://127.0.0.1:8929（与宿主机访问一致，clone 地址才对）
+# =============================================================================
+
+name: mini-gitlab-bot-e2e
+
+services:
+  gitlab:
+    image: ${E2E_GITLAB_IMAGE:-gitlab/gitlab-ce:17.4.2-ce.0}
+    container_name: mgb-e2e-gitlab
+    hostname: gitlab.e2e.local
+    restart: "no"
+    shm_size: "256m"
+    ports:
+      - "8929:8929"
+      - "2224:22"
+    extra_hosts:
+      # 让容器内的 GitLab 能回调宿主机上的 bot（Linux 需要这一行）
+      - "host.docker.internal:host-gateway"
+    environment:
+      GITLAB_ROOT_PASSWORD: ${E2E_ROOT_PASSWORD:-Kx7mQ2vT9pL4nR8}
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://127.0.0.1:8929'
+        gitlab_rails['gitlab_shell_ssh_port'] = 2224
+        # 省内存：关掉内置监控栈
+        prometheus_monitoring['enable'] = false
+        node_exporter['enable'] = false
+        redis_exporter['enable'] = false
+        postgres_exporter['enable'] = false
+        gitlab_exporter['enable'] = false
+        sidekiq['max_concurrency'] = 5
+        puma['worker_processes'] = 2
+        postgresql['shared_buffers'] = '256MB'
+      GITLAB_SKIP_TAILSCALE_CHECK: "1"
+    volumes:
+      - gitlab-config:/etc/gitlab
+      - gitlab-logs:/var/log/gitlab
+      - gitlab-data:/var/opt/gitlab
+    healthcheck:
+      test:
+        - CMD-SHELL
+        # 这个版本的 /-/readiness 会 404，用登录页当"Web 已起来"的判据
+        - "curl -fsS -o /dev/null http://127.0.0.1:8929/users/sign_in || exit 1"
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 120s
+
+  # 只有 scripts/e2e/run.sh --with-runner 才会用到（profile 默认不启动）
+  runner:
+    image: ${E2E_RUNNER_IMAGE:-gitlab/gitlab-runner:v17.4.2}
+    container_name: mgb-e2e-runner
+    profiles: ["runner"]
+    restart: "no"
+    depends_on:
+      - gitlab
+    volumes:
+      - runner-config:/etc/gitlab-runner
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  gitlab-config:
+  gitlab-logs:
+  gitlab-data:
+  runner-config:
