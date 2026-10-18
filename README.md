@@ -13,9 +13,11 @@
 > **设计的唯一事实来源是 [PLAN.md](PLAN.md)**，事实核查依据在 [docs/research/](docs/research/README.md)，
 > 文案模板在 [docs/templates.md](docs/templates.md)。
 >
-> **上线前必须补做的三件人工验证**（本仓库无法覆盖，见 [PLAN.md](PLAN.md) §8.2–§8.5）：
-> 真 agent 首跑、真 GitLab 首跑、真 codex 下 MCP 工具调用；另外镜像构建需在有网环境
-> 实际 build 一次（这里是静态校验）。
+> **真机已验证（2026-10-18）**：GitLab CE 19.5.0 + 真 codex 0.157.1 +
+> Ark `deepseek-v4-1-flash` 跑通完整闭环，15/15 断言通过（脚本
+> [`scripts/e2e/`](scripts/e2e/README.md)，详见 [PLAN.md](PLAN.md) §8.6）。
+> **仍待完成**：M4 的 CI 工具需要 runner 才能真验（脚本支持 `--with-runner`）、
+> 镜像首次 build。
 >
 > **诚实声明**：CI / 开发机没有真 GitLab 实例、没有 codex 二进制、没有 LLM 端点，所以
 > "真 GitLab 上一次完整闭环"与"真 agent 至少一次成功"这两条判据**无法在本仓库内验证**。

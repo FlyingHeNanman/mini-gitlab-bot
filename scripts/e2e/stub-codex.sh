@@ -40,18 +40,19 @@ cd "$cd_dir"
 mkdir -p .mini-gitlab-bot
 
 # ---- 1) 改代码（让 diff 非空；这是四条件的第四条）----
-if [[ -f app.py ]]; then
-  # 保持文件可 import，同时产生一行真实改动
-  printf 'def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n' > app.py
-else
-  printf 'def add(a, b):\n    return a + b\n' > app.py
-fi
+cat > app.py <<'PY'
+def parse_labels(labels):
+    """把标签列表归一化：去空白、转小写、丢空项。空输入应返回 []。"""
+    if not labels:
+        return []
+    return [str(item).strip().lower() for item in labels if str(item).strip()]
+PY
 
 # ---- 2) 结构化报告（网关读它来渲染 MR 描述）----
 cat > .mini-gitlab-bot/report.json <<'JSON'
 {
-  "summary": "把 add 的减法改成加法（e2e 桩 agent）",
-  "fixes": ["`app.py:1`：`add()` 由减法改为加法"],
+  "summary": "parse_labels 在空标签时返回 []（e2e 桩 agent）",
+  "fixes": ["`app.py`：空标签时返回 `[]` 而不是 `None`"],
   "tests": ["（e2e 桩 agent，未新增测试）"],
   "test_command": "（e2e 未运行测试）",
   "test_summary": "not-run",

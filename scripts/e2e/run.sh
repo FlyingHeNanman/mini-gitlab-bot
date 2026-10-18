@@ -257,11 +257,25 @@ cat >"$SEED_DIR/pyproject.toml" <<'TOML'
 name = "demo"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["pytest>=8"]
 TOML
 cat >"$SEED_DIR/app.py" <<'PY'
-def add(a, b):
-    return a - b
+def parse_labels(labels):
+    """把标签列表归一化：去空白、转小写、丢空项。空输入应返回 []。"""
+    if not labels:
+        return None
+    return [str(item).strip().lower() for item in labels if str(item).strip()]
+PY
+cat >"$SEED_DIR/test_labels.py" <<'PY'
+from app import parse_labels
+
+
+def test_empty_labels():
+    assert parse_labels([]) == []
+
+
+def test_normalizes():
+    assert parse_labels([" Bug ", "AI-FIX"]) == ["bug", "ai-fix"]
 PY
 cat >"$SEED_DIR/.gitlab-ci.yml" <<'YML'
 stages: [test]
@@ -279,7 +293,7 @@ python3 - "$SEED_DIR" "$GITLAB" "$ADMIN_TOKEN" "$PROJECT_ID" <<'PYEOF'
 import json, os, sys, urllib.error, urllib.request
 
 seed, gitlab, token, project_id = sys.argv[1:5]
-FILES = ("pyproject.toml", "uv.lock", "app.py", ".gitlab-ci.yml")
+FILES = ("pyproject.toml", "uv.lock", "app.py", "test_labels.py", ".gitlab-ci.yml")
 
 
 def call(method, path, payload=None):
@@ -383,7 +397,7 @@ fi
   MODEL_NAME="${MODEL_NAME:-e2e-model}" \
   LLM_API_KEY="${LLM_API_KEY:-}" \
   CODEX_EXPECTED_VERSION="${CODEX_EXPECTED_VERSION:-e2e-stub}" \
-  AGENT_TIMEOUT_SEC=180 \
+  AGENT_TIMEOUT_SEC="${E2E_AGENT_TIMEOUT:-600}" \
   POLL_INTERVAL_SEC=0.5 \
   LEASE_SECONDS=60 \
   WORKER_OWNER=e2e-worker \
@@ -455,8 +469,8 @@ if [[ "$(echo "$mr_json" | json_get 'len(d)')" != "0" ]]; then
     bad "MR 标题没有 Draft: 前缀：$mr_title"
   grep -qi "closes #$ISSUE_IID" <<<"$mr_desc" && ok "MR 描述含 Closes #$ISSUE_IID" ||
     bad "MR 描述缺少 Closes #$ISSUE_IID"
-  grep -q "e2e 桩 agent" <<<"$mr_desc" && ok "MR 描述带上了 report.json 的摘要" ||
-    bad "MR 描述里没有 report.json 的 summary"
+  grep -q "\*\*摘要\*\*：" <<<"$mr_desc" && ok "MR 描述带上了 report.json 的摘要" ||
+    bad "MR 描述里没有 report.json 的 summary（模型可能没写 report.json）"
 else
   bad "没有开出 MR"
 fi

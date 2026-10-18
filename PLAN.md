@@ -361,6 +361,37 @@ stdout 只留协议、日志一律走 stderr）。工具契约（11 个 schema +
 运行时依赖，都必须在那台构建机上实际 `docker compose build` 一次才能确认。这是上线前
 除三项人工验证之外的第四件事。
 
+### 8.6 真机验证结果（2026-10-18）
+
+在本机用 **GitLab CE 19.5.0**（docker）+ **真 codex 0.157.1** + **Ark `/api/coding/v3`
+的 `deepseek-v4-1-flash-260910`**，把 M2/M3 的判据真跑了一遍。脚本见
+[`scripts/e2e/`](scripts/e2e/README.md)。
+
+**结果：15 项断言全过**（另 1 项 CI 需要 runner，未开）。
+
+真实 agent 的表现（不是桩）：
+- 读 `context.md` → 定位 `app.py` 的空输入分支 → `return None` 改 `return []`
+- **自己跑测试**：`UV_OFFLINE=1 uv run --no-sync pytest -q` → `2 passed`
+- 写 `.mini-gitlab-bot/report.json`（summary/fixes/tests/test_summary/risks）
+- 遵守约束：没有 push、没有建 MR；网关兜底提交 `fix(issue-8): ...` → 推分支 → draft MR !5
+  → 单条状态评论 → 标签 `ai-fix` → `ai-fix:done`
+- 全程 41s，模型调用 ~100k 输入 token（含 codex 系统提示）
+
+**真机暴露、仓库内测不出来的三件事**
+
+1. **codex 的 `workspace-write` 把 `.git` 设为只读**，agent **无法自己 commit**
+   （`Unable to create .git/index.lock: Read-only file system`）。我们 M2 设计的
+   `commit_all` 兜底提交正好接住；已把 `context.md` 与 `TASK_PROMPT` 改成
+   "改完文件即可，提交由网关完成"，避免模型浪费轮次去折腾。
+2. **`model_providers.<name>.name` 不能为空**：codex 启动时校验，报
+   `provider name must not be empty`。M5 的 `MODEL_BASE_URL` 逻辑已经带上了 `name`。
+3. **Ark 的模型开通/计费与路径有关**：`/api/v3` 下 `deepseek-v4-1-flash-260910` 返回
+   `ModelNotOpen`，而 **`/api/coding/v3` 下同一个模型 id 可用**（`/responses` 也通）。
+   所以 `MODEL_BASE_URL` 必须指向实际开通的那条路径。
+
+**仍未完成**：M4 的 CI 工具（pipeline/job/trace）需要 runner，脚本支持 `--with-runner`
+但本次未开；镜像首次 build 仍未做。
+
 
 
 ## 9. 里程碑与待办
