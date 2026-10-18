@@ -557,7 +557,7 @@ if ((WITH_RUNNER == 1)); then
     skip "无法通过 API 创建 runner（版本差异），M4 的 CI 工具本次不验"
   else
     "${COMPOSE[@]}" run --rm -T runner register \
-      --non-interactive --url "http://gitlab:8929" --token "$runner_token" \
+      --non-interactive --url "http://127.0.0.1:8929" --token "$runner_token" \
       --executor shell --description e2e-shell >/dev/null 2>&1 &&
       ok "runner 已注册" || skip "runner register 失败"
     "${COMPOSE[@]}" up -d runner >/dev/null 2>&1 || true

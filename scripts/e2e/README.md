@@ -39,6 +39,10 @@ LLM_API_KEY=sk-... \
 
 `--with-runner` 会额外注册 runner 并触发 pipeline（验 M4 的 CI 工具；默认关）。
 
+> runner 用 **host 网络**：GitLab 的 `external_url` 是 `http://127.0.0.1:8929`，runner 在
+> 容器里用 `127.0.0.1` 会指回自己，clone 会报 `Failed to connect ... port 8929`（实测）。
+> 用 host 网络后 runner 走宿主机的发布端口，pipeline 才能真跑。
+
 ## 已知的坑（都踩过了）
 
 | 现象 | 原因 | 处理 |
@@ -50,6 +54,9 @@ LLM_API_KEY=sk-... \
 | 分支删除 404 | 分支名里的 `/` 要 URL 编码 | `ai-fix%2F...` |
 | 二次运行播种 400 | `create` 撞已存在文件 | 播种按已存在文件改用 `update` |
 | `/-/readiness` 404 | 版本差异 | 用 `/users/sign_in` 200 当就绪判据 |
+| runner 的 job clone 失败：`Failed to connect to 127.0.0.1 port 8929` | 容器内 127.0.0.1 指自己 | runner 用 `network_mode: host` |
+| 触发 pipeline 400 `script config should be a string...` | 这份 CI 配置在 GitLab 19 上校验不过 | 用极简 `script: [echo hi, exit 1]` |
+| `POST /user/runners` 偶发 502 | GitLab 刚重启/忙 | 等 `/users/sign_in` 200 再调 |
 
 ## 清理
 

@@ -404,8 +404,19 @@ stdout 只留协议、日志一律走 stderr）。工具契约（11 个 schema +
    `ModelNotOpen`，而 **`/api/coding/v3` 下同一个模型 id 可用**（`/responses` 也通）。
    所以 `MODEL_BASE_URL` 必须指向实际开通的那条路径。
 
-**仍未完成**：M4 的 CI 工具（pipeline/job/trace）需要 runner，脚本支持 `--with-runner`
-但本次未开；镜像首次 build 仍未做。
+**M4 的 CI 工具已在真 GitLab 上验证（同日）**：注册 runner（host 网络）后真跑出
+pipeline / job / trace，用只读 token 起 `gateway.mcp_readonly` 逐个调用：
+`get_project` / `list_pipelines` / `list_pipeline_jobs` / `get_job_log`（拿到真实
+`ERROR: Job failed: exit status 1`）/ `get_pipeline_test_report` / `get_recent_commits` /
+`get_commit_diff` / `list_issue_related_merge_requests` / `search_issues` / `get_issue`
+全部返回真实数据（11 个工具，`isError=false`）。**跨项目参数被拒**与**写 token 拒绝启动**
+两条硬约束此前已有测试锁定。
+
+**真机 runner 的两个坑**：
+1. runner 在容器里用 `127.0.0.1:8929` 会指回自己（GitLab 的 `external_url` 是 127.0.0.1）
+   → runner 必须用 host 网络，或把 `external_url` 改成容器可达地址。
+2. 种子里的 `script: [echo "e2e: ...", exit 1]` 在 GitLab 19 上被判定"script config 非法"
+   （同样的数组换成 `echo hi` 就通过），改用极简配置。
 
 
 
