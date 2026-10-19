@@ -54,9 +54,11 @@ class Settings(BaseSettings):
     #: 进 context.md 的 issue 评论条数（只取最新 N 条人类评论）
     issue_comment_limit: int = 20
 
-    # ---------- 只读任务页（可选，默认关闭） ----------
-    #: 为空 = /tasks 保持 404（v1 行为，不因升级而意外暴露）；设置后需带
-    #: `X-Admin-Token` 头或 `?token=` 才能访问
+    # ---------- 只读任务页（默认开启） ----------
+    #: 关掉后 /tasks* 一律 404（例如要临时暴露端口时）
+    tasks_page_enabled: bool = True
+    #: 留空 = 首次启动自动生成并持久化到 `<DB_PATH 同目录>/admin_token`（0600）；
+    #: 显式设置则以此为准
     admin_token: str = ""
 
     # ---------- 可观测性与保留策略（M5） ----------

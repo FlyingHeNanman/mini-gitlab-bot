@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -67,6 +68,8 @@ class Runtime:
     clock: Callable[[], datetime]
     metrics: Metrics
     janitor: Any
+    #: 只读任务页的 token；空 = 页面关闭
+    admin_token: str
 
 
 def build_runtime(
@@ -92,6 +95,7 @@ def build_runtime(
     env = env if env is not None else UnavailableEnv()
     notifier = notifier if notifier is not None else CommentNotifier(scm)
     metrics = metrics if metrics is not None else Metrics()
+    admin_token = _resolve_admin_token(settings)
 
     orchestrator = TaskOrchestrator(
         store=store,
@@ -156,7 +160,38 @@ def build_runtime(
         clock=clock,
         metrics=metrics,
         janitor=janitor,
+        admin_token=admin_token,
     )
+
+
+def _resolve_admin_token(settings: Settings) -> str:
+    """任务页 token：显式配置优先，否则自动生成并持久化（0600）。
+
+    为什么自动生成而不是"默认无鉴权"：任务表里有仓库名、issue 标题、失败堆栈，
+    默认裸奔等于给内网任何人一个信息出口。生成一次并落到 `DB_PATH` 同目录，
+    重启后 URL 不变；运维只要 `cat /data/admin_token` 就能拿到。
+    """
+    if not settings.tasks_page_enabled:
+        return ""
+    if settings.admin_token:
+        return settings.admin_token
+
+    token_file = Path(settings.db_path).parent / "admin_token"
+    try:
+        if token_file.is_file():
+            existing = token_file.read_text(encoding="utf-8").strip()
+            if len(existing) >= 16:
+                return existing
+        token = secrets.token_hex(16)
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(token + "\n", encoding="utf-8")
+        token_file.chmod(0o600)
+        logger.info("已生成只读任务页 token：%s（%s）", token, token_file)
+        return token
+    except OSError as exc:
+        # 写不了就退回"关闭页面"，绝不在没有鉴权的情况下开门
+        logger.warning("无法读写任务页 token 文件（%s），/tasks 已关闭：%s", token_file, exc)
+        return ""
 
 
 def build_production_runtime(

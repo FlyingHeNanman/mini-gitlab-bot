@@ -59,6 +59,10 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
         attach_uvicorn_loggers()
         for message in settings.startup_warnings():
             logger.warning("启动检查：%s", message)
+        if rt.admin_token:
+            logger.info("只读任务页已启用：GET /tasks（首次带 ?token=… 或 X-Admin-Token 头）")
+        else:
+            logger.info("只读任务页已关闭（TASKS_PAGE_ENABLED=false 或无法持久化 token）")
         worker_job: asyncio.Task[None] | None = None
         if rt.worker is not None:
             worker_job = asyncio.create_task(rt.worker.run_forever(), name="mini-gitlab-bot-worker")
@@ -154,7 +158,7 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
 
     def _admin_denied(request: Request) -> JSONResponse | None:
         """None = 通过；否则返回应当直接返回的响应。"""
-        expected = settings.admin_token
+        expected = rt.admin_token
         if not expected:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if not hmac.compare_digest(_supplied_token(request), expected):
@@ -174,7 +178,7 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
         response = RedirectResponse(url, status_code=303)
         response.set_cookie(
             ADMIN_COOKIE,
-            settings.admin_token,
+            rt.admin_token,
             httponly=True,
             samesite="strict",
             path="/",  # `/tasks.json` 不在 `/tasks` 前缀下，所以用根路径
@@ -204,7 +208,7 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             render_tasks_page(
                 tasks,
                 filters=filters,
-                token=settings.admin_token,
+                token=rt.admin_token,
                 refresh_sec=10,
                 now=rt.clock(),
             )
@@ -241,9 +245,7 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
         log_path = task.log_path or str(settings.log_dir / task.id / "codex.jsonl")
         log_tail, log_lines = _read_log_tail(log_path)
         return HTMLResponse(
-            render_task_detail(
-                task, token=settings.admin_token, log_tail=log_tail, log_lines=log_lines
-            )
+            render_task_detail(task, token=rt.admin_token, log_tail=log_tail, log_lines=log_lines)
         )
 
     @app.post("/webhook/gitlab")

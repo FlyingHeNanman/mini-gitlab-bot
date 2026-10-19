@@ -15,7 +15,8 @@ TOKEN = "admin-token-0123456789"
 
 
 def make_app(runtime, settings, *, token: str = TOKEN):
-    return create_app(settings=settings.model_copy(update={"admin_token": token}), runtime=runtime)
+    """runtime 必须带着目标 token 构建（token 在 build_runtime 时解析）。"""
+    return create_app(settings=settings, runtime=runtime)
 
 
 async def get(app, path: str, *, headers: dict[str, str] | None = None) -> httpx.Response:
@@ -27,16 +28,17 @@ async def get(app, path: str, *, headers: dict[str, str] | None = None) -> httpx
         return await client.get(path, headers=headers or {})
 
 
-async def test_tasks_is_404_when_no_admin_token(make_runtime, settings) -> None:
-    """默认关闭：不配 ADMIN_TOKEN 就完全不可见（v1 行为不变）。"""
-    runtime, _ = make_runtime()
-    app = create_app(settings=settings.model_copy(update={"admin_token": ""}), runtime=runtime)
+async def test_tasks_is_404_when_the_page_is_disabled(make_runtime, settings) -> None:
+    """显式关掉（或 token 持久化失败）时完全不可见。"""
+    runtime, _ = make_runtime(tasks_page_enabled=False)
+    assert runtime.admin_token == ""
+    app = create_app(settings=settings, runtime=runtime)
     for path in ("/tasks", "/tasks.json", "/tasks/task-1"):
         assert (await get(app, path)).status_code == 404
 
 
 async def test_tasks_requires_the_token(make_runtime, settings) -> None:
-    runtime, _ = make_runtime()
+    runtime, _ = make_runtime(admin_token=TOKEN)
     app = make_app(runtime, settings)
     assert (await get(app, "/tasks")).status_code == 401
     assert (await get(app, "/tasks", headers={"X-Admin-Token": "nope"})).status_code == 401
@@ -46,7 +48,7 @@ async def test_tasks_requires_the_token(make_runtime, settings) -> None:
 
 async def test_query_token_is_exchanged_for_a_cookie(make_runtime, settings) -> None:
     """`?token=` 只出现在登录那一次：303 到无 token 的 URL + 种 HttpOnly Cookie。"""
-    runtime, _ = make_runtime()
+    runtime, _ = make_runtime(admin_token=TOKEN)
     app = make_app(runtime, settings)
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -64,7 +66,7 @@ async def test_query_token_is_exchanged_for_a_cookie(make_runtime, settings) -> 
 
 
 async def test_tasks_accepts_token_via_query_with_redirects(make_runtime, settings) -> None:
-    runtime, _ = make_runtime()
+    runtime, _ = make_runtime(admin_token=TOKEN)
     app = make_app(runtime, settings)
     response = await get(app, f"/tasks?token={TOKEN}")
     assert response.status_code == 200
@@ -72,7 +74,7 @@ async def test_tasks_accepts_token_via_query_with_redirects(make_runtime, settin
 
 
 async def test_tasks_lists_real_tasks(make_runtime, settings, clock) -> None:
-    runtime, _ = make_runtime(with_worker=True)
+    runtime, _ = make_runtime(with_worker=True, admin_token=TOKEN)
     task = runtime.store.enqueue(make_trigger(), now=clock()).task
     assert task is not None
     runtime.store.transition(task.id, TaskState.PREPARING, now=clock())
@@ -93,7 +95,7 @@ async def test_tasks_lists_real_tasks(make_runtime, settings, clock) -> None:
 
 
 async def test_tasks_filter_by_state(make_runtime, settings, clock) -> None:
-    runtime, _ = make_runtime(with_worker=True)
+    runtime, _ = make_runtime(with_worker=True, admin_token=TOKEN)
     queued = runtime.store.enqueue(make_trigger(issue_iid=1, delivery_key="d1"), now=clock()).task
     done = runtime.store.enqueue(make_trigger(issue_iid=2, delivery_key="d2"), now=clock()).task
     assert queued is not None and done is not None
@@ -115,14 +117,14 @@ async def test_tasks_filter_by_state(make_runtime, settings, clock) -> None:
 
 
 async def test_invalid_filters_return_400(make_runtime, settings) -> None:
-    runtime, _ = make_runtime()
+    runtime, _ = make_runtime(admin_token=TOKEN)
     app = make_app(runtime, settings)
     assert (await get(app, f"/tasks.json?token={TOKEN}&state=nope")).status_code == 400
     assert (await get(app, f"/tasks.json?token={TOKEN}&limit=abc")).status_code == 400
 
 
 async def test_task_detail_page_and_404(make_runtime, settings, clock) -> None:
-    runtime, _ = make_runtime(with_worker=True)
+    runtime, _ = make_runtime(with_worker=True, admin_token=TOKEN)
     task = runtime.store.enqueue(make_trigger(), now=clock()).task
     assert task is not None
     app = make_app(runtime, settings)
@@ -137,7 +139,26 @@ async def test_task_detail_page_and_404(make_runtime, settings, clock) -> None:
 
 
 async def test_token_is_not_echoed_on_failure(make_runtime, settings) -> None:
-    runtime, _ = make_runtime()
+    runtime, _ = make_runtime(admin_token=TOKEN)
     app = make_app(runtime, settings)
     body = (await get(app, "/tasks", headers={"X-Admin-Token": "wrong"})).text
     assert TOKEN not in body
+
+
+async def test_token_is_generated_and_persisted_when_unset(make_runtime) -> None:
+    """默认开启：没配 ADMIN_TOKEN 就自动生成，并落到 DB 同目录的 0600 文件里。"""
+    runtime, _ = make_runtime()
+    token = runtime.admin_token
+    assert len(token) >= 16
+    token_file = runtime.settings.db_path.parent / "admin_token"
+    assert token_file.read_text(encoding="utf-8").strip() == token
+    assert (token_file.stat().st_mode & 0o777) == 0o600
+
+    # 同一个 DB 目录再起一个 runtime → 复用同一个 token（重启后 URL 不变）
+    again, _ = make_runtime()
+    assert again.admin_token == token
+
+
+async def test_explicit_admin_token_wins(make_runtime) -> None:
+    runtime, _ = make_runtime(admin_token=TOKEN)
+    assert runtime.admin_token == TOKEN

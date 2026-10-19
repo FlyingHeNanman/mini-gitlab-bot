@@ -187,9 +187,11 @@ async def test_malformed_json_still_returns_200(make_runtime, settings) -> None:
     assert response.json() == {"status": "error", "reason": "invalid_json"}
 
 
-async def test_no_route_exposes_task_internals(make_runtime, settings) -> None:
-    """/tasks 在 v1 故意不暴露（PLAN §12 #7）：不能泄露仓库名 / issue 标题 / 堆栈。"""
+async def test_no_route_exposes_task_internals_without_a_token(make_runtime, settings) -> None:
+    """任务信息默认受 token 保护：匿名访问 /tasks 一律 401，且不泄露内容。"""
     runtime, _ = make_runtime()
     app = create_app(settings=settings, runtime=runtime)
-    assert (await get(app, "/tasks")).status_code == 404
+    response = await get(app, "/tasks")
+    assert response.status_code == 401
+    assert "group/project-a" not in response.text
     assert (await get(app, "/")).status_code == 404

@@ -76,9 +76,11 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | `GET /tasks.json` | 同上，给脚本用 | `{"tasks":[{id,state,failure_reason,mr_url,...}]}` |
 | `GET /tasks/<id>` | 任务详情：失败原因/证据 + 日志尾部 | HTML |
 
-> `/tasks*` **默认 404**：只有设置了 `ADMIN_TOKEN` 才打开。首次用 `?token=<ADMIN_TOKEN>`
-> 访问，会换成 HttpOnly Cookie 再 303 掉（token 不留在浏览器历史里）；脚本也可用
-> `X-Admin-Token` 头。只读 —— 不提供 retry/cancel。
+> `/tasks*` **默认开启但必须带 token**：`ADMIN_TOKEN` 留空时首次启动自动生成，
+> 持久化到 `<DB_PATH 同目录>/admin_token`（0600，重启不变），`cat /data/admin_token` 取。
+> 首次用 `?token=<token>` 访问会换成 HttpOnly Cookie 并 303 掉（token 不留在浏览器历史里）；
+> 脚本可用 `X-Admin-Token` 头。要临时关闭：`TASKS_PAGE_ENABLED=false`。
+> 只读 —— 不提供 retry/cancel。
 
 **日志**：`LOG_FORMAT=json`（默认）时每行一个 JSON，字段 `ts/level/logger/msg/task_id/...`，
 异常带 `exc`。`task_id` 由 worker 用 `contextvars` 注入，并发任务之间不会串味。
