@@ -148,20 +148,26 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
 
     ADMIN_COOKIE = "mgb_admin"
 
-    def _supplied_token(request: Request) -> str:
-        return (
-            request.headers.get("x-admin-token")
-            or request.cookies.get(ADMIN_COOKIE)
-            or request.query_params.get("token")
-            or ""
-        )
+    def _token_matches(candidate: str | None) -> bool:
+        expected = rt.admin_token
+        return bool(candidate) and hmac.compare_digest(candidate, expected)
 
     def _admin_denied(request: Request) -> JSONResponse | None:
-        """None = 通过；否则返回应当直接返回的响应。"""
+        """None = 通过；否则返回应当直接返回的响应。
+
+        三种凭据是 **或** 关系：header / cookie / query，**任意一个对就行**。
+        这点很重要 —— 浏览器里可能残留旧 token 的 cookie，如果让 cookie 优先，
+        新链接就会被旧 cookie 挡住，用户看到"认证失败"却不知道删 cookie。
+        """
         expected = rt.admin_token
         if not expected:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
-        if not hmac.compare_digest(_supplied_token(request), expected):
+        candidates = (
+            request.headers.get("x-admin-token"),
+            request.cookies.get(ADMIN_COOKIE),
+            request.query_params.get("token"),
+        )
+        if not any(_token_matches(candidate) for candidate in candidates):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
         return None
 
@@ -169,8 +175,10 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
         """用 `?token=` 首次访问时，换成一个 HttpOnly Cookie 再 303 掉。
 
         目的：token 只出现在一行访问日志里（登录那一下），之后不再进 URL / 浏览器历史。
+        如果浏览器里已有**旧 token** 的 cookie，也要用这次的 token 覆盖掉。
         """
-        if not request.query_params.get("token") or request.cookies.get(ADMIN_COOKIE):
+        query_token = request.query_params.get("token")
+        if not query_token or request.cookies.get(ADMIN_COOKIE) == rt.admin_token:
             return None
         target = request.url.path
         extra = {key: value for key, value in request.query_params.items() if key != "token"}

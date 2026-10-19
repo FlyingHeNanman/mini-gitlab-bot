@@ -162,3 +162,33 @@ async def test_token_is_generated_and_persisted_when_unset(make_runtime) -> None
 async def test_explicit_admin_token_wins(make_runtime) -> None:
     runtime, _ = make_runtime(admin_token=TOKEN)
     assert runtime.admin_token == TOKEN
+
+
+async def test_stale_cookie_does_not_lock_out_a_new_token(make_runtime, settings) -> None:
+    """浏览器里可能残留旧 token 的 cookie：带新 token 的链接必须仍能进（并覆盖 cookie）。"""
+    runtime, _ = make_runtime(admin_token=TOKEN)
+    app = make_app(runtime, settings)
+    transport = ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.cookies.set("mgb_admin", "old-token-from-a-previous-run")
+        # 旧 cookie 单独用 → 401（不会因为带了 cookie 就放行）
+        assert (await client.get("/tasks", follow_redirects=False)).status_code == 401
+        # 但带新 token 的链接必须能进：303 + 覆盖 cookie
+        fresh = await client.get(f"/tasks?token={TOKEN}", follow_redirects=False)
+        assert fresh.status_code == 303
+        assert fresh.headers["set-cookie"].startswith(f"mgb_admin={TOKEN}")
+        # 覆盖后正常访问
+        assert (await client.get("/tasks")).status_code == 200
+
+
+async def test_any_credential_source_is_enough(make_runtime, settings) -> None:
+    runtime, _ = make_runtime(admin_token=TOKEN)
+    app = make_app(runtime, settings)
+    transport = ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # 错误 header + 正确 cookie → 放行（或关系，不是与关系）
+        client.cookies.set("mgb_admin", TOKEN)
+        response = await client.get("/tasks", headers={"X-Admin-Token": "wrong"})
+        assert response.status_code == 200
