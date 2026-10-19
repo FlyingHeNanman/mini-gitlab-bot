@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 SERVER_NAME = "mini-gitlab-bot-readonly"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "0.1.0"  # 与包版本保持一致
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
 #: MCP 子进程用环境变量拿到"绑定的项目/issue + 只读 token"（值绝不进 argv）

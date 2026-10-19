@@ -25,6 +25,7 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
+from core import __version__
 from core.logging_setup import attach_uvicorn_loggers, configure_logging
 from core.states import ACTIVE_STATES, TaskState
 from core.tasks_view import TaskFilters, render_task_detail, render_tasks_page, task_to_dict
@@ -82,7 +83,7 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
                     await worker_job
             rt.store.close()
 
-    app = FastAPI(title="mini-gitlab-bot", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="mini-gitlab-bot", version=__version__, lifespan=lifespan)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
