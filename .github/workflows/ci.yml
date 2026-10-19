@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.5.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: 安装 Python 3.13 与依赖
+        run: |
+          uv python install 3.13
+          uv sync --frozen
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: 单元 + 集成测试（假适配器 / 桩 GitLab，无需外部服务）
+        run: uv run pytest -q
+
+      - name: 容器资产静态校验
+        run: uv run pytest -q tests/unit/test_container_assets.py

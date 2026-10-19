@@ -158,6 +158,19 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 6. **任务本地产物绝不进提交**：`.git/info/exclude`（第一层）+ `git add` 之后的后置校验（第二层，发现即失败）—— `.mini-gitlab-bot/`、`.venv/`、`__pycache__/` 都不可能进 MR。
 7. **失败要能解释**：每个失败任务都记录 `failure_stage` / `failure_reason` / `failure_evidence` / `log_path`，并把日志尾部折叠进 issue 评论。
 
+## 版本与发布
+
+- 当前版本 **0.1.0**（`core/__init__.py` 的 `__version__` 与 `pyproject.toml` 一致，测试会校验）
+- 镜像：`ghcr.io/flyinghenanman/mini-gitlab-bot:0.1.0`（同时打 `latest`）
+- 变更记录：[CHANGELOG.md](CHANGELOG.md)；发版与分支约定见 [docs/RELEASING.md](docs/RELEASING.md)
+
+```bash
+docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:0.1.0
+```
+
+分支模型：`main`（发布，只接受来自 `dev` 的合并）→ `dev`（日常开发）→ `feature/*`。
+打 `v*` tag 会触发 `.github/workflows/release.yml`：跑测试 → 推 GHCR → 建 Release。
+
 ## 开发
 
 ```bash
