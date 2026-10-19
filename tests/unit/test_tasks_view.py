@@ -134,3 +134,19 @@ def test_dark_mode_overrides_every_colored_surface() -> None:
     for selector in ("body {", "th {", "td", "input, select, button", "pre {", ".badge-succeeded"):
         assert selector in block, selector
     assert "color: #e6edf3" in block
+
+
+def test_page_has_brand_header_and_no_meta_notice() -> None:
+    page = render_tasks_page([make_task()], filters=TaskFilters(), token=TOKEN, now=START)
+    assert "mini-gitlab-bot" in page
+    assert 'class="brand"' in page
+    assert 'class="chip"' in page
+    # 之前那句"不提供 retry/cancel / 不要分享链接"已按需求删除
+    assert "不提供 retry/cancel" not in page
+    assert "不要把那条链接分享出去" not in page
+
+
+def test_detail_page_reuses_the_same_header() -> None:
+    page = render_task_detail(make_task(), token=TOKEN)
+    assert 'class="brand"' in page
+    assert "← 返回列表" in page

@@ -105,8 +105,23 @@ _CSS = """
 * { box-sizing: border-box; }
 body { margin: 0; padding: 24px; font: 14px/1.5 -apple-system, "Segoe UI", "Noto Sans CJK SC",
        sans-serif; background: #fafafa; color: #1f2328; }
-h1 { font-size: 20px; margin: 0 0 4px; }
-h2 { font-size: 16px; margin: 24px 0 8px; }
+h1, h2 { margin: 0; }
+h2 { font-size: 15px; margin: 24px 0 8px; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+       flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid #d0d7de; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #1a7f37; flex: none;
+       box-shadow: 0 0 0 4px rgba(26, 127, 55, 0.12); }
+.brand h1 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
+.brand .slash { color: #8b949e; }
+.chip { font-size: 12.5px; padding: 2px 10px; border-radius: 999px; background: #eef1f4;
+        color: #59636e; white-space: nowrap; }
+.meta { font-size: 12.5px; color: #59636e; display: flex; gap: 14px; flex-wrap: wrap; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 16px 0 12px; }
+.toolbar .spacer { flex: 1; }
+.stats { display: inline-flex; gap: 12px; align-items: center; }
+.stats .ok { color: #1a7f37; }
+.stats .bad { color: #cf222e; }
 a { color: #0969da; text-decoration: none; }
 a:hover { text-decoration: underline; }
 form { margin: 16px 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -138,6 +153,12 @@ pre { margin: 0; padding: 12px; border-radius: 8px; overflow: auto; max-height: 
 @media (prefers-color-scheme: dark) {
   body { background: #0d1117; color: #e6edf3; }
   a { color: #7aa2f7; }
+  .top { border-bottom-color: #30363d; }
+  .chip { background: #21262d; color: #8b949e; }
+  .stats .ok { color: #7ee787; }
+  .stats .bad { color: #ffa198; }
+  .meta { color: #8b949e; }
+  .brand .slash { color: #6e7681; }
   table { border-color: #30363d; }
   th, td { border-bottom-color: #30363d; }
   th { background: #161b22; }
@@ -163,6 +184,17 @@ def _badge(task: Task) -> str:
     else:
         css = "badge-active"
     return f'<span class="badge {css}">{html.escape(task.state.value)}</span>'
+
+
+def _header(*, section: str, right: str = "") -> str:
+    return (
+        '<div class="top"><div class="brand">'
+        '<span class="dot"></span>'
+        "<h1>mini-gitlab-bot</h1>"
+        '<span class="slash">/</span>'
+        f'<span class="chip">{section}</span>'
+        f"</div>{f'<div class="meta">{right}</div>' if right else ''}</div>"
+    )
 
 
 def _page(title: str, body: str, *, refresh_sec: int | None = None) -> str:
@@ -191,14 +223,26 @@ def render_tasks_page(
             f'<option value="{html.escape(state.value)}"{selected}>'
             f"{html.escape(state.value)}</option>"
         )
+    ok_count = sum(1 for task in tasks if task.state is TaskState.SUCCEEDED)
+    bad_count = sum(1 for task in tasks if task.state is TaskState.FAILED)
+    running = len(tasks) - ok_count - bad_count
+    stats = (
+        f"<span><b>{len(tasks)}</b> 条</span>"
+        f'<span class="ok">✓ <b>{ok_count}</b></span>'
+        f'<span class="bad">✕ <b>{bad_count}</b></span>'
+        + (f"<span>▶ <b>{running}</b></span>" if running else "")
+    )
     form = (
-        '<form method="get" action="/tasks">'
+        '<form class="toolbar" method="get" action="/tasks">'
         f'<input type="hidden" name="token" value="{html.escape(token)}">'
-        f'<select name="state">{"".join(options)}</select>'
-        f'<input type="number" name="limit" min="1" max="500" value="{filters.limit}">'
+        f'<select name="state" aria-label="状态">{"".join(options)}</select>'
+        f'<input type="number" name="limit" min="1" max="500" value="{filters.limit}"'
+        ' aria-label="条数" style="width: 90px">'
         '<button type="submit">过滤</button>'
-        f'<span class="muted">共 {len(tasks)} 条 · 每 {refresh_sec or 0}s 自动刷新 · '
-        f"{now.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC</span>"
+        '<span class="spacer"></span>'
+        f'<span class="meta"><span class="stats">{stats}</span>'
+        f"<span>{now.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        f"{f' · {refresh_sec}s 刷新' if refresh_sec else ''}</span></span>"
         "</form>"
     )
 
@@ -235,13 +279,8 @@ def render_tasks_page(
     else:
         table = '<div class="empty">没有符合条件的任务</div>'
 
-    body = (
-        "<h1>mini-gitlab-bot · 任务</h1>"
-        '<p class="muted">只读页面：不提供 retry/cancel。首次带 token 的链接会被换成 '
-        "Cookie，不要把那条链接分享出去。</p>"
-        f"{form}{table}"
-    )
-    return _page("mini-gitlab-bot · 任务", body, refresh_sec=refresh_sec)
+    body = _header(section="任务") + form + table
+    return _page("任务 · mini-gitlab-bot", body, refresh_sec=refresh_sec)
 
 
 def render_task_detail(task: Task, *, token: str, log_tail: str = "", log_lines: int = 0) -> str:
@@ -285,8 +324,10 @@ def render_task_detail(task: Task, *, token: str, log_tail: str = "", log_lines:
         else '<p class="muted">没有可读的日志文件。</p>'
     )
     body = (
-        f'<p><a href="/tasks?token={html.escape(token)}">← 返回列表</a></p>'
-        f"<h1>任务 {html.escape(task.short_id)}</h1>"
+        _header(section=f"任务 {html.escape(task.short_id)}", right=_badge(task))
+        + f'<div class="toolbar">'
+        f'<a class="chip" href="/tasks?token={html.escape(token)}">← 返回列表</a>'
+        f"</div>"
         f"<table>{detail}</table>{tail}"
     )
-    return _page(f"任务 {task.short_id}", body)
+    return _page(f"任务 {task.short_id} · mini-gitlab-bot", body)
