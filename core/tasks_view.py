@@ -105,22 +105,13 @@ _CSS = """
 * { box-sizing: border-box; }
 body { margin: 0; padding: 24px; font: 14px/1.5 -apple-system, "Segoe UI", "Noto Sans CJK SC",
        sans-serif; background: #fafafa; color: #1f2328; }
-@media (prefers-color-scheme: dark) {
-  body { background: #0d1117; color: #e6edf3; }
-  a { color: #7aa2f7; }
-  table { border-color: #30363d !important; }
-  th { background: #161b22 !important; }
-  tr:nth-child(even) td { background: #11161d; }
-  .muted { color: #8b949e !important; }
-  .badge-failed { background: #3d1214 !important; color: #ffa198 !important; }
-  .badge-succeeded { background: #12261e !important; color: #7ee787 !important; }
-  .badge-active { background: #2b2411 !important; color: #e3b341 !important; }
-  input, select, button { background: #161b22; color: #e6edf3; border-color: #30363d; }
-}
 h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 24px 0 8px; }
+a { color: #0969da; text-decoration: none; }
+a:hover { text-decoration: underline; }
 form { margin: 16px 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 input, select, button { padding: 6px 10px; border: 1px solid #d0d7de; border-radius: 6px;
-                        font: inherit; }
+                        font: inherit; background: #ffffff; color: #1f2328; }
 button { cursor: pointer; background: #f6f8fa; }
 table { width: 100%; border-collapse: collapse; border: 1px solid #d0d7de; border-radius: 8px;
         overflow: hidden; }
@@ -130,6 +121,8 @@ th { background: #f6f8fa; font-weight: 600; white-space: nowrap; }
 tr:nth-child(even) td { background: #f6f8fa; }
 tr:last-child td { border-bottom: none; }
 td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+pre { margin: 0; padding: 12px; border-radius: 8px; overflow: auto; max-height: 480px;
+      background: #f6f8fa; border: 1px solid #d0d7de; }
 .muted { color: #59636e; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
@@ -138,6 +131,27 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .badge-failed { background: #ffebe9; color: #cf222e; }
 .badge-active { background: #fff8c5; color: #9a6700; }
 .empty { padding: 32px; text-align: center; color: #59636e; }
+
+/* 深色模式必须放在所有基础规则**之后**：同优先级下靠后者胜出。
+   之前把它放在前面，button/th 的基础背景色又把深色覆盖回去，
+   结果就是"白底 + 浅色字"看不见（真实 bug）。 */
+@media (prefers-color-scheme: dark) {
+  body { background: #0d1117; color: #e6edf3; }
+  a { color: #7aa2f7; }
+  table { border-color: #30363d; }
+  th, td { border-bottom-color: #30363d; }
+  th { background: #161b22; }
+  tr:nth-child(even) td { background: #11161d; }
+  input, select, button { background: #161b22; color: #e6edf3; border-color: #30363d; }
+  button { background: #21262d; }
+  button:hover { background: #30363d; }
+  pre { background: #161b22; border-color: #30363d; color: #e6edf3; }
+  .muted { color: #8b949e; }
+  .empty { color: #8b949e; }
+  .badge-succeeded { background: #12261e; color: #7ee787; }
+  .badge-failed { background: #3d1214; color: #ffa198; }
+  .badge-active { background: #2b2411; color: #e3b341; }
+}
 """
 
 

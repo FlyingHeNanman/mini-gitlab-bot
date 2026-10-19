@@ -111,3 +111,26 @@ def test_detail_page_escapes_log_content() -> None:
     page = render_task_detail(make_task(), token=TOKEN, log_tail="<script>x</script>", log_lines=1)
     assert "<script>x" not in page
     assert "&lt;script&gt;" in page
+
+
+def test_dark_mode_block_comes_after_base_rules() -> None:
+    """深色模式必须最后出现：同优先级下靠后者胜出。
+
+    这条测试是"白底浅色字"那个真 bug 的回归 —— 之前 @media 块写在基础规则前面，
+    button/th 的基础背景色把它覆盖了。
+    """
+    from core.tasks_view import _CSS
+
+    dark = _CSS.index("@media (prefers-color-scheme: dark)")
+    for selector in ("button {", "th {", "table {", "tr:nth-child(even) td {", "pre {"):
+        assert _CSS.index(selector) < dark, selector
+
+
+def test_dark_mode_overrides_every_colored_surface() -> None:
+    """深色块要覆盖所有带底色的元素，漏一个就会出现"看不见"。"""
+    from core.tasks_view import _CSS
+
+    block = _CSS[_CSS.index("@media (prefers-color-scheme: dark)") :]
+    for selector in ("body {", "th {", "td", "input, select, button", "pre {", ".badge-succeeded"):
+        assert selector in block, selector
+    assert "color: #e6edf3" in block
