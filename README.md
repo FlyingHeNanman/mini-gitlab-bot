@@ -72,6 +72,13 @@ GitLab：CI → 人工审批 → 合并 ◄────────────�
 | `GET /healthz` | 存活探针 | `{"status":"ok"}`（不含任何任务信息） |
 | `GET /readyz` | 就绪探针：数据库可读 + worker 在跑 + 没有卡死任务 | 200 `{"status":"ok","queued":N}` / 503 `{"status":"degraded","reason":"store\|worker_disabled\|stalled"}` |
 | `GET /metrics` | Prometheus 文本格式 | `mini_gitlab_bot_tasks_total{state=...}`、`task_duration_seconds`、`task_failures_total{stage=...}`、`queue_depth{state=queued\|active}`、`worker_inflight`、`janitor_*` |
+| `GET /tasks` | **可选**只读任务页（需 `ADMIN_TOKEN`） | HTML 表格；`?state=failed&limit=50` 过滤；10s 自动刷新 |
+| `GET /tasks.json` | 同上，给脚本用 | `{"tasks":[{id,state,failure_reason,mr_url,...}]}` |
+| `GET /tasks/<id>` | 任务详情：失败原因/证据 + 日志尾部 | HTML |
+
+> `/tasks*` **默认 404**：只有设置了 `ADMIN_TOKEN` 才打开。首次用 `?token=<ADMIN_TOKEN>`
+> 访问，会换成 HttpOnly Cookie 再 303 掉（token 不留在浏览器历史里）；脚本也可用
+> `X-Admin-Token` 头。只读 —— 不提供 retry/cancel。
 
 **日志**：`LOG_FORMAT=json`（默认）时每行一个 JSON，字段 `ts/level/logger/msg/task_id/...`，
 异常带 `exc`。`task_id` 由 worker 用 `contextvars` 注入，并发任务之间不会串味。

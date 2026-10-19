@@ -429,7 +429,7 @@ pipeline / job / trace，用只读 token 起 `gateway.mcp_readonly` 逐个调用
 | **M2 Agent 链路** | job 工作目录与隔离、`context.md` 预取、uv 两阶段、分支创建、codex 调用（`-c` 钉死 + 删 `.codex/` + `--json` 落盘 + 四条件判定）、diff 策略校验 | ✅ 代码完成：278 项测试全绿。真件链路（本地 bare 仓 + 真 `uv sync` + 桩 codex）端到端跑通"改代码 → commit → 校验通过"，并覆盖四条件各条失败、禁改路径拦截、超时杀进程组、凭据不外泄；**"真 agent 至少一次成功"待内网机器补做**（本环境无 LLM 端点，见 §8.2） |
 | **M3 收尾与状态** | push（凭据不进 argv）、draft MR、单条状态评论原地编辑、标签状态机流转、失败升级 | ✅ 代码完成：319 项测试全绿。`GitLabSCM` 用 python-gitlab 真发 HTTP，打到可编程的本地桩 GitLab（`tests/stub_gitlab.py`）验证请求形状与幂等；**"真 GitLab 实例上一次完整闭环"待内网机器补做**（见 §8.3） |
 | **M4 只读迷你 MCP** | 11 个只读工具（§3.3）、项目绑定、`read_api` token、输出截断 | ✅ 代码完成：374 项测试全绿。真子进程 + 真 stdio 协议 + 真 HTTP 验证了 11 个工具、`get_job_log` 取到失败日志、跨项目参数被拒、写 token 在场即拒绝启动（见 §8.4）；**"真 GitLab + 真 codex 下 agent 主动调用"待内网机器补做** |
-| **M5 运维加固** | pin 版本、镜像重写、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权（v1 不暴露） | ✅ 代码完成：417 项测试全绿。镜像/编排已重写并做静态校验；`/readyz`、`/metrics`、JSON 日志、Janitor 均有测试与真机烟测（§8.5）。**镜像首次 build 与 `/tasks` 的最终取舍待上线时确认**（v1 仍不暴露） |
+| **M5 运维加固** | pin 版本、镜像重写、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权 | ✅ 代码完成：417 项测试全绿。镜像/编排已重写并做静态校验；`/readyz`、`/metrics`、JSON 日志、Janitor 均有测试与真机烟测（§8.5）。**镜像首次 build 与 `/tasks` 的最终取舍待上线时确认**（v1 仍不暴露） |
 
 **已明确推迟**：Renovate（F-1，不进本仓库）；GitHub 平台适配；非 Python 项目；仓库级配置 `.mini-gitlab-bot.yaml`（§12）；以及 `TODO.md` 里记录的两条需求（issue 自动回复并关闭、按 tag 自动补 release 文案）—— 都属于 v1 之后的功能扩充，不进 M1–M5。
 

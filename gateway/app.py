@@ -12,17 +12,22 @@ webhook、40 次永久禁用，所以任何异常都只落日志、响应仍是 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from core.logging_setup import attach_uvicorn_loggers, configure_logging
 from core.states import ACTIVE_STATES, TaskState
+from core.tasks_view import TaskFilters, render_task_detail, render_tasks_page, task_to_dict
 from gateway.config import Settings
 from gateway.permissions import PermissionChecker
 from gateway.runtime import Runtime, build_production_runtime
@@ -132,6 +137,115 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             logger.exception("采集队列指标失败")
         return PlainTextResponse(metrics_registry.render(), media_type="text/plain; version=0.0.4")
 
+    # ---------------- 只读任务页（默认关闭，ADMIN_TOKEN 保护） ----------------
+    #
+    # v1 默认不暴露任何任务信息；只有显式配置了 ADMIN_TOKEN 才打开。
+    # 这样"升级镜像"不会意外把仓库名/issue 标题/失败堆栈暴露出去。
+
+    ADMIN_COOKIE = "mgb_admin"
+
+    def _supplied_token(request: Request) -> str:
+        return (
+            request.headers.get("x-admin-token")
+            or request.cookies.get(ADMIN_COOKIE)
+            or request.query_params.get("token")
+            or ""
+        )
+
+    def _admin_denied(request: Request) -> JSONResponse | None:
+        """None = 通过；否则返回应当直接返回的响应。"""
+        expected = settings.admin_token
+        if not expected:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if not hmac.compare_digest(_supplied_token(request), expected):
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        return None
+
+    def _cookie_redirect(request: Request) -> RedirectResponse | None:
+        """用 `?token=` 首次访问时，换成一个 HttpOnly Cookie 再 303 掉。
+
+        目的：token 只出现在一行访问日志里（登录那一下），之后不再进 URL / 浏览器历史。
+        """
+        if not request.query_params.get("token") or request.cookies.get(ADMIN_COOKIE):
+            return None
+        target = request.url.path
+        extra = {key: value for key, value in request.query_params.items() if key != "token"}
+        url = f"{target}?{urlencode(extra)}" if extra else target
+        response = RedirectResponse(url, status_code=303)
+        response.set_cookie(
+            ADMIN_COOKIE,
+            settings.admin_token,
+            httponly=True,
+            samesite="strict",
+            path="/",  # `/tasks.json` 不在 `/tasks` 前缀下，所以用根路径
+        )
+        return response
+
+    def _list_for(state: str, limit: int):
+        wanted = TaskState(state) if state else None
+        return rt.store.list_tasks(state=wanted, limit=limit)
+
+    @app.get("/tasks")
+    async def tasks_page(request: Request) -> Any:
+        denied = _admin_denied(request)
+        if denied is not None:
+            return denied
+        redirect = _cookie_redirect(request)
+        if redirect is not None:
+            return redirect
+        state = request.query_params.get("state", "").strip()
+        try:
+            limit = max(1, min(500, int(request.query_params.get("limit", "50"))))
+            tasks = _list_for(state, limit)
+        except ValueError:
+            return JSONResponse({"detail": "invalid state or limit"}, status_code=400)
+        filters = TaskFilters(state=state, limit=limit)
+        return HTMLResponse(
+            render_tasks_page(
+                tasks,
+                filters=filters,
+                token=settings.admin_token,
+                refresh_sec=10,
+                now=rt.clock(),
+            )
+        )
+
+    @app.get("/tasks.json")
+    async def tasks_json(request: Request) -> Any:
+        denied = _admin_denied(request)
+        if denied is not None:
+            return denied
+        redirect = _cookie_redirect(request)
+        if redirect is not None:
+            return redirect
+        state = request.query_params.get("state", "").strip()
+        try:
+            limit = max(1, min(500, int(request.query_params.get("limit", "50"))))
+            tasks = _list_for(state, limit)
+        except ValueError:
+            return JSONResponse({"detail": "invalid state or limit"}, status_code=400)
+        return JSONResponse({"tasks": [task_to_dict(task) for task in tasks]})
+
+    @app.get("/tasks/{task_id}")
+    async def task_detail(request: Request, task_id: str) -> Any:
+        denied = _admin_denied(request)
+        if denied is not None:
+            return denied
+        redirect = _cookie_redirect(request)
+        if redirect is not None:
+            return redirect
+        task = rt.store.get(task_id)
+        if task is None:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        # 成功任务不会写 task.log_path，但 codex 日志按约定落在 <LOG_DIR>/<task>/codex.jsonl
+        log_path = task.log_path or str(settings.log_dir / task.id / "codex.jsonl")
+        log_tail, log_lines = _read_log_tail(log_path)
+        return HTMLResponse(
+            render_task_detail(
+                task, token=settings.admin_token, log_tail=log_tail, log_lines=log_lines
+            )
+        )
+
     @app.post("/webhook/gitlab")
     async def gitlab_webhook(request: Request) -> JSONResponse:
         try:
@@ -192,6 +306,21 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             return JSONResponse({"status": "error"})
 
     return app
+
+
+def _read_log_tail(log_path: str | None, *, limit: int = 40) -> tuple[str, int]:
+    """读日志文件末尾若干行。路径来自数据库，可能是宿主机路径 —— 失败一律当"没有"。"""
+    if not log_path:
+        return "", 0
+    candidate = Path(log_path)
+    try:
+        if not candidate.is_file():
+            return "", 0
+        text = candidate.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", 0
+    lines = text.splitlines()
+    return "\n".join(lines[-limit:]), len(lines)
 
 
 async def _has_stalled_task(runtime: Runtime, stale_sec: int) -> bool:

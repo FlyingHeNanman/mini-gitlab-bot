@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     #: 进 context.md 的 issue 评论条数（只取最新 N 条人类评论）
     issue_comment_limit: int = 20
 
+    # ---------- 只读任务页（可选，默认关闭） ----------
+    #: 为空 = /tasks 保持 404（v1 行为，不因升级而意外暴露）；设置后需带
+    #: `X-Admin-Token` 头或 `?token=` 才能访问
+    admin_token: str = ""
+
     # ---------- 可观测性与保留策略（M5） ----------
     log_level: str = "INFO"
     #: json | text（容器里用 json，本地开发用 text 更顺眼）
@@ -150,6 +155,8 @@ class Settings(BaseSettings):
             )
         if not self.webhook_secret and self.worker_enabled:
             warnings.append("WORKER_ENABLED=true 但没有活跃 webhook：任务只能来自手工入队")
+        if self.admin_token and len(self.admin_token) < 16:
+            warnings.append("ADMIN_TOKEN 太短（<16 字符）：请换成随机长串")
         if not self.gitlab_token:
             warnings.append("GITLAB_TOKEN 未设置：SCM 退回占位实现，权限闸门会拒绝所有触发")
         if not self.model_base_url:
