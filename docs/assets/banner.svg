@@ -30,32 +30,33 @@
   </g>
 
   <!-- 标题 -->
-  <text x="168" y="128" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif"
+  <text x="168" y="128" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, sans-serif"
         font-size="56" font-weight="700" fill="#f8fafc" letter-spacing="-1.5">mini-gitlab-bot</text>
 
   <!-- 副标题：ai-fix 用行内 tspan，避免胶囊挡住文字 -->
-  <text x="170" y="172" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif"
-        font-size="20" fill="#a9b6cc">打上 <tspan font-family="ui-monospace, Menlo, Consolas, monospace"
-        font-size="19" font-weight="700" fill="#8be9fd">ai-fix</tspan> 标签 → 机器人自动修复并开 draft MR</text>
+  <text x="170" y="176" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, sans-serif"
+        font-size="19" fill="#9fb0c9">打上&#160;<tspan font-family="ui-monospace, Menlo, Consolas, monospace"
+        font-size="18" font-weight="700" fill="#8be9fd">ai-fix</tspan>&#160;标签
+        <tspan fill="#5f6f8a">→</tspan> 机器人自动修复并开 draft MR</text>
 
   <!-- 四个技术胶囊：文字居中，宽度按内容留足 -->
-  <g font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="15"
+  <g font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, sans-serif" font-size="15"
      text-anchor="middle">
-    <rect x="168" y="204" width="116" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
-    <text x="226" y="227" fill="#cbd5e1">Codex CLI</text>
+    <rect x="168" y="210" width="116" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
+    <text x="226" y="233" fill="#cbd5e1">Codex CLI</text>
 
-    <rect x="296" y="204" width="129" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
-    <text x="360.5" y="227" fill="#cbd5e1">Python 网关</text>
+    <rect x="296" y="210" width="129" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
+    <text x="360.5" y="233" fill="#cbd5e1">Python 网关</text>
 
-    <rect x="437" y="204" width="125" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
-    <text x="499.5" y="227" fill="#cbd5e1">MCP · 11 工具</text>
+    <rect x="437" y="210" width="125" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
+    <text x="499.5" y="233" fill="#cbd5e1">MCP · 11 工具</text>
 
-    <rect x="574" y="204" width="137" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
-    <text x="642.5" y="227" fill="#cbd5e1">零凭据 · 零网络</text>
+    <rect x="574" y="210" width="137" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
+    <text x="642.5" y="233" fill="#cbd5e1">零凭据 · 零网络</text>
   </g>
 
   <!-- 右侧流水线示意 -->
-  <g transform="translate(800, 84)" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif">
+  <g transform="translate(800, 84)" font-family="-apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, sans-serif">
     <rect x="0" y="0" width="320" height="176" rx="16" fill="#0d1526" stroke="#27324a"/>
     <text x="20" y="30" font-size="12" fill="#7d8aa5" letter-spacing="1.5">PIPELINE</text>
 
