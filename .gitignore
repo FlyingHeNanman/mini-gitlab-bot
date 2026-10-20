@@ -19,3 +19,4 @@ work/
 .smoke*/
 .e2e/
 .sandbox/
+.gh-token
