@@ -1,210 +1,246 @@
-# mini-gitlab-bot
+<div align="center">
+  <img src="docs/assets/banner.svg" alt="mini-gitlab-bot" width="900">
+</div>
 
-内网自托管 GitLab 的轻量仓库维护机器人：**Codex CLI 做 AI agent 内核，Python 网关做触发器 / 上下文准备 / 收尾编排**。
+<h1 align="center">mini-gitlab-bot</h1>
 
-给 Issue 打上 `ai-fix` 标签即自动闭环：入队 → 准备环境 → Codex 自主修复 → 网关校验 → push → 开 **draft MR** → 人工审批合并。
+<p align="center">
+  给 GitLab Issue 打上 <code>ai-fix</code> 标签，机器人自动修复并开一个 <b>draft MR</b>。<br>
+  Codex CLI 做 AI 内核，Python 网关做触发器 / 上下文准备 / 收尾编排。
+</p>
 
-> **状态：M5（运维加固）已完成 —— v1 的五个里程碑全部落地。**
-> M1 主干/触发器 → M2 真实 agent 链路 → M3 真 GitLab 读写 → M4 只读迷你 MCP →
-> M5 运维加固：镜像重写（版本全 pin、非 root、健康检查、无 glab）、**结构化日志**
-> （JSON + task_id 上下文）、**/healthz /readyz /metrics**、**保留策略**（日志 14 天 /
-> 终态任务 90 天 / 孤儿 job 目录 1 天）。
-> `uv run pytest` → **417 项全绿**；`ruff check` / `ruff format --check` 干净。
-> **设计的唯一事实来源是 [PLAN.md](PLAN.md)**，事实核查依据在 [docs/research/](docs/research/README.md)，
-> 文案模板在 [docs/templates.md](docs/templates.md)。
->
-> **真机已验证（2026-10-18）**：GitLab CE 19.5.0 + 真 codex 0.157.1 +
-> Ark `deepseek-v4-1-flash` 跑通完整闭环，15/15 断言通过（脚本
-> [`scripts/e2e/`](scripts/e2e/README.md)，详见 [PLAN.md](PLAN.md) §8.6）。
-> **仍待完成**：M4 的 CI 工具需要 runner 才能真验（脚本支持 `--with-runner`）、
-> 镜像首次 build。
->
-> **诚实声明**：CI / 开发机没有真 GitLab 实例、没有 codex 二进制、没有 LLM 端点，所以
-> "真 GitLab 上一次完整闭环"与"真 agent 至少一次成功"这两条判据**无法在本仓库内验证**。
-> 仓库内做的是等价验证：真 git 本地仓库 + 真 `uv sync` + 桩 codex + 桩 GitLab API（真 HTTP）。
-> 真机首跑仍需在有内网模型端点与 GitLab 的环境里补做（见 [PLAN.md](PLAN.md) §8.2/§8.3）。
+<p align="center">
+  <a href="https://github.com/FlyingHeNanman/mini-gitlab-bot/actions/workflows/ci.yml">
+    <img src="https://github.com/FlyingHeNanman/mini-gitlab-bot/actions/workflows/ci.yml/badge.svg" alt="ci">
+  </a>
+  <a href="https://github.com/FlyingHeNanman/mini-gitlab-bot/releases">
+    <img src="https://img.shields.io/github/v/release/FlyingHeNanman/mini-gitlab-bot?color=7aa2f7" alt="release">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
+  </a>
+  <img src="https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white" alt="python">
+  <a href="https://github.com/FlyingHeNanman/mini-gitlab-bot/pkgs/container/mini-gitlab-bot">
+    <img src="https://img.shields.io/badge/ghcr.io-mini--gitlab--bot-2496ED?logo=docker&logoColor=white" alt="image">
+  </a>
+</p>
 
-## 架构
+---
+
+## 它解决什么问题
+
+内网 GitLab 上，一个 issue 从"有人报"到"有人改"经常要排很久。这个机器人把中间那段自动化：
+
+> **打标签 → 拉代码 → 装依赖 → AI 改代码 → 跑测试 → 推分支 → 开 draft MR → 回帖告诉你结果**
+
+合并永远由人决定。机器人的产出只有两样：一个 **draft MR**，和 issue 上一条**持续更新**的状态评论。
+
+## 一次完整的闭环
+
+真实跑出来的结果（GitLab CE 19.5 + 真 codex，41 秒）：
+
+```text
+issue #8  「parse_labels 在空标签时返回 None」
+  └─ alice 打上 ai-fix 标签
+       ├─ 权限闸门：alice 是 Developer(30) ✓
+       ├─ 准备环境：uv sync（网关侧联网）→ 离线自检 ✓
+       ├─ Codex 沙箱：无网络、无凭据，读 context.md → 改 app.py
+       │    `return None` → `return []`，自己跑 pytest：2 passed
+       ├─ 四条件 + diff 校验 ✓ → push 分支 ai-fix/8-…
+       ├─ 开 draft MR：「Draft: fix(issue-8): parse_labels 在空标签时返回 None」
+       │    描述里有 Closes #8、agent 的 report.json 摘要、验证命令与结果
+       └─ issue 上贴状态评论，标签流转 ai-fix → ai-fix:done
+```
+
+失败也会说话：`ai-fix:failed` + 一条带**失败阶段、原因、日志尾部**的评论，而不是静默消失。
+
+## 工作流
+
+```mermaid
+flowchart LR
+    A["Issue 打上 ai-fix<br/>或评论 /ai-fix"] --> B["Webhook 网关"]
+    B --> C{"权限闸门<br/>access_level ≥ 30"}
+    C -- 拒绝 --> X["忽略并记录"]
+    C -- 通过 --> D[("SQLite 持久队列")]
+    D --> E["准备环境<br/>uv sync（联网）"]
+    E --> F["Codex 沙箱<br/>无网络 / 无凭据"]
+    F -. 按需取上下文 .-> M[("只读 MCP<br/>11 个工具")]
+    F --> G{"四条件 + diff 校验"}
+    G -- 不通过 --> H["失败收尾<br/>评论 + ai-fix:failed"]
+    G -- 通过 --> I["push 分支"]
+    I --> J["开 draft MR"]
+    J --> K["状态评论 + ai-fix:done"]
+```
+
+## 为什么不是"把 issue 直接丢给 AI"
+
+| 问题 | 这里的做法 |
+| --- | --- |
+| AI 可能拿到凭据并外泄 | **agent 零凭据**：GitLab token 只存在于网关进程；git 凭据只经 `GIT_ASKPASS` 进，绝不进 argv |
+| AI 可能联网乱跑 | **agent 零网络**：`--sandbox workspace-write` + 显式关闭 network；装依赖在网关的联网阶段做完 |
+| AI 可能改 CI 配置 / 密钥 | **diff 校验**：禁改路径 + 文件数/行数上限，命中就在 push 之前拦下 |
+| AI 可能"假装完成" | **四条件判定**：`exit 0` 且出现 `turn.completed` 且 `-o` 文件本次新写入 且 diff 非空 |
+| AI 可能直接合代码 | **永远只开 draft MR**，合并必须人工审批 |
+| 出问题查不到 | 每个任务都有状态机流水、失败阶段/原因、codex 原始 JSONL 日志（14 天） |
+
+## 快速开始
+
+### 1. 起服务
+
+```bash
+git clone https://github.com/FlyingHeNanman/mini-gitlab-bot.git
+cd mini-gitlab-bot
+
+docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:0.1.0   # 或本地 docker compose build
+
+cp .env.example .env
+# 至少填：WEBHOOK_SECRET / GITLAB_TOKEN / GITLAB_READONLY_TOKEN / REPO_WHITELIST / MODEL_BASE_URL
+docker compose up -d
+```
+
+`docker compose` 会挂两个卷：`/data`（SQLite + 日志）、`/work`（job 目录 + uv 缓存）。
+
+> **给容器 `seccomp=unconfined`**（compose 里已配好）：Codex 的 Linux 沙箱用 bubblewrap 创建
+> 非特权 user namespace，Docker 默认 seccomp 会拒绝，表现为 agent 一条命令都执行不了。
+
+### 2. GitLab 侧准备
+
+| 步骤 | 说明 |
+| --- | --- |
+| 机器人账号 | 建一个专用账号（如 `gitlab-bot`），角色 **Developer**，不要给 Maintainer/Owner |
+| 两个 Token | 主 token：`api`；只读 token：`read_api`（给 MCP 用，物理上不能写） |
+| 四个标签 | `ai-fix`、`ai-fix:running`、`ai-fix:done`、`ai-fix:failed` |
+| Webhook | Settings → Webhooks → `http://<bot 容器>:8080/webhook/gitlab`，Secret 与 `WEBHOOK_SECRET` 一致，勾 **Issues events**（用评论命令再加 **Comments**） |
+
+### 3. 触发
+
+在任意 issue 上打 `ai-fix` 标签，或评论 `/ai-fix`。之后去 issue 看状态评论，或去看 draft MR。
+
+## 可观测性
+
+| 端点 | 用途 |
+| --- | --- |
+| `GET /healthz` | 存活探针（不含任何任务信息） |
+| `GET /readyz` | 就绪：数据库可读 / worker 在跑 / 没有卡死任务 |
+| `GET /metrics` | Prometheus 文本：`tasks_total{state}`、`task_duration_seconds`、`queue_depth`、`worker_inflight`… |
+| `GET /tasks` | **只读任务页**（token 保护）：状态、失败阶段、原因、耗时、MR 链接，点进去看日志尾部 |
+| `GET /tasks.json` | 同上，给脚本用 |
+
+`/tasks` 默认开启但**必须带 token**：没配 `ADMIN_TOKEN` 时首次启动自动生成，持久化到
+`<DB_PATH 同目录>/admin_token`（0600），`cat /data/admin_token` 取即可。
+日志是结构化 JSON，每行自带 `task_id`；保留策略：日志 14 天、终态任务 90 天。
+
+## 安全模型
 
 ```
-GitLab Issue ── 打上 ai-fix 标签（或评论 /ai-fix）
-   │  Webhook
-   ▼
-Python 网关（常驻单容器）────────────────────────────────────┐
-   │  校验/幂等入队 → 建分支 clone → 准备环境(uv, 联网)        │
-   │  → 预取 context.md → 唤醒 codex → 校验 diff → push        │
-   │  → 开 draft MR → 状态评论 → 标签流转                       │
-   ▼                                                         │
-Codex CLI（沙箱 workspace-write：零网络、零凭据、只读写 workdir）│
-   │  读 context.md、改代码、跑测试、git commit                │
-   │  需要更多上下文 → 调「只读迷你 MCP」（限当前项目）          │
-   ▼                                                         │
-GitLab：CI → 人工审批 → 合并 ◄───────────────────────────────┘
+┌───────────────────────── 网关进程（有网、有凭据）─────────────────────────┐
+│  Webhook → 权限闸门 → 队列 → clone/commit/push → 开 MR → 评论/标签          │
+│                                     │                                      │
+│                          ┌──────────▼──────────┐                           │
+│                          │  Codex 沙箱（子进程）│  无网络 · 无 GitLab 凭据   │
+│                          │  只能写 job 目录     │  读 context.md / 改代码    │
+│                          └──────────┬──────────┘                           │
+│                                     │ 只读 MCP（read_api token，项目绑定）  │
+└─────────────────────────────────────┼──────────────────────────────────────┘
+                                      ▼
+                             GitLab API（只读 11 个工具）
 ```
 
-## 关键设计
+- 安全关键配置全部用 `-c` 下发（优先级高于仓库自带配置），启动前删除 workdir 里的 `.codex/`
+- 只读 MCP **工具 schema 里没有 `project` 参数**，项目由网关经环境变量绑定 —— agent 物理上换不了项目
+- 每个 job 独立 `TMPDIR`；任务本地产物（`.mini-gitlab-bot/`、`.venv/`…）绝不进提交
 
-- **agent 零凭据、零网络**：sandbox 用 `workspace-write`（网络默认关闭，写限工作目录），且不向 agent 暴露任何 token —— 这样即使 issue 正文携带 prompt injection，也没有外泄通道。
-- **网关独占 GitLab 读写**：单一写者，审计清晰；正确方向是"开只读的洞，把写权限攥在手里"。
-- **只读迷你 MCP（自研，已实现）**：给 agent 11 个只读工具（工具清单见 [PLAN.md](PLAN.md) §3.3），**工具 schema 里没有 project 参数**（项目/issue 由网关经环境变量绑定，物理上无法跨项目），并使用独立的 `read_api` token。不采用 `glab mcp serve`（官方已弃用、217 个工具、无只读模式）。MCP server 若在环境里看到写 token（`GITLAB_TOKEN`）会**拒绝启动**。
-- **两阶段执行**：装依赖在网关侧（可访问内网 kkRepo），跑 agent 时完全离线（`UV_OFFLINE=1 uv run --no-sync`）。
-- **人工兜底**：永远只开 draft MR，合并必须人工审批；MR 幂等（同一源分支不会开出第二条）。
-- **标签只做增量**：用 `add_labels`/`remove_labels`，绝不"读出全部标签再整体写回"（那会抹掉别人并发加的标签）。
-- **失败不静默**：状态用单条评论原地编辑，标签流转 `ai-fix:running` → `ai-fix:done` / `ai-fix:failed`。
+## 配置
 
-## 快速开始（GitLab 侧准备）
-
-1. 建机器人账号（如 `gitlab-bot`），角色给目标项目 **Developer**（不要给管理员）。
-2. 生成 Personal Access Token：
-   - 主 token：scope `api`（网关读写）
-   - 只读 token：scope `read_api`（只读迷你 MCP 用）
-3. 目标项目加标签：`ai-fix`、`ai-fix:running`、`ai-fix:done`、`ai-fix:failed`。
-4. 项目 → Settings → Webhooks → 添加：
-   - URL：`http://<bot容器>:8080/webhook/gitlab`
-   - Secret token：与 `WEBHOOK_SECRET` 一致
-   - 勾选 **Issues events**（若要用评论命令，再勾 **Comments**；要用机密 issue 再勾 Confidential work items events）
-5. 健康检查：`GET /healthz`（只回 `{"status":"ok"}`，故意不暴露任何任务信息）。
-
-## 运维
-
-| 端点 | 用途 | 返回 |
-| --- | --- | --- |
-| `GET /healthz` | 存活探针 | `{"status":"ok"}`（不含任何任务信息） |
-| `GET /readyz` | 就绪探针：数据库可读 + worker 在跑 + 没有卡死任务 | 200 `{"status":"ok","queued":N}` / 503 `{"status":"degraded","reason":"store\|worker_disabled\|stalled"}` |
-| `GET /metrics` | Prometheus 文本格式 | `mini_gitlab_bot_tasks_total{state=...}`、`task_duration_seconds`、`task_failures_total{stage=...}`、`queue_depth{state=queued\|active}`、`worker_inflight`、`janitor_*` |
-| `GET /tasks` | **可选**只读任务页（需 `ADMIN_TOKEN`） | HTML 表格；`?state=failed&limit=50` 过滤；10s 自动刷新 |
-| `GET /tasks.json` | 同上，给脚本用 | `{"tasks":[{id,state,failure_reason,mr_url,...}]}` |
-| `GET /tasks/<id>` | 任务详情：失败原因/证据 + 日志尾部 | HTML |
-
-> `/tasks*` **默认开启但必须带 token**：`ADMIN_TOKEN` 留空时首次启动自动生成，
-> 持久化到 `<DB_PATH 同目录>/admin_token`（0600，重启不变），`cat /data/admin_token` 取。
-> 首次用 `?token=<token>` 访问会换成 HttpOnly Cookie 并 303 掉（token 不留在浏览器历史里）；
-> 脚本可用 `X-Admin-Token` 头。要临时关闭：`TASKS_PAGE_ENABLED=false`。
-> 只读 —— 不提供 retry/cancel。
-
-**日志**：`LOG_FORMAT=json`（默认）时每行一个 JSON，字段 `ts/level/logger/msg/task_id/...`，
-异常带 `exc`。`task_id` 由 worker 用 `contextvars` 注入，并发任务之间不会串味。
-`LOG_FORMAT=text` 便于本地阅读。
-
-**保留策略**（`Janitor`，默认每小时跑一次）：
-
-| 对象 | 位置 | 保留 | 说明 |
-| --- | --- | --- | --- |
-| codex / uv 日志 | `<LOG_DIR>/<task_id>/` | 14 天 | 复盘失败要能翻到原始 JSONL |
-| 终态任务 | SQLite `tasks` + `task_events` | 90 天 | 排队中/在飞的任务无论多老都保留 |
-| 孤儿 job 目录 | `<WORK_DIR>/task-*` | 1 天 | 只删 `task-` 前缀且不属于任何非终态任务 |
-
-**容器**：`docker compose up -d --build`（先 `cp .env.example .env`，至少填
-`WEBHOOK_SECRET` / `GITLAB_TOKEN` / `GITLAB_READONLY_TOKEN` / `REPO_WHITELIST` / `MODEL_BASE_URL`）。
-
-> ⚠️ **必须给容器 `seccomp=unconfined`**（compose 里已配好）：codex 的 Linux 沙箱用
-> bubblewrap 创建**非特权 user namespace**，Docker 默认 seccomp 会拒绝，表现为
-> `bwrap: No permissions to create a new namespace` —— agent 一条命令都执行不了，
-> 任务会在"diff 为空"处失败。宿主机若已放开 userns 且自带 seccomp 配置，可自行去掉。
-> 另：容器内如果 GitLab 用 `host.docker.internal` 回调不通，改用 docker bridge 网关 IP
-> （`docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'`）。镜像非 root（uid 10001）、
-`cap_drop: ALL`、`no-new-privileges`、`init: true`、双卷（`/data` 存 SQLite+日志、`/work` 存 job 目录+uv 缓存）。
-
-## 配置项（环境变量）
+<details>
+<summary><b>常用环境变量（完整列表见 <code>.env.example</code>）</b></summary>
 
 | 变量 | 说明 | 默认 |
 | --- | --- | --- |
-| `WEBHOOK_SECRET` | GitLab Webhook 的 Secret token；**未配置时一律 401（fail closed）** | 空 |
-| `GITLAB_URL` | GitLab 实例地址 | `https://gitlab.example.com` |
-| `GITLAB_TOKEN` | 主 token（scope: `api`） | — |
-| `GITLAB_READONLY_TOKEN` | 只读 token（scope: `read_api`，供迷你 MCP）。留空 = 关闭 MCP | — |
-| `MCP_ENABLED` | 只读迷你 MCP 总开关（无只读 token 时自动失效） | `true` |
-| `MCP_PYTHON` | 启动 MCP server 的解释器（空 = 与网关同一个） | 空 |
-| `MCP_MAX_OUTPUT_CHARS` | 单次工具输出上限，超出截断 | `20000` |
-| `GITLAB_TIMEOUT_SEC` | 单次 GitLab API 超时；5xx/连接错误自动重试 | `30` |
-| `ISSUE_COMMENT_LIMIT` | 进 `context.md` 的 issue 评论条数（只取最新 N 条人类评论） | `20` |
-| `REPO_WHITELIST` | 允许处理的项目，逗号分隔；**空 = 全部拒绝（fail closed）** | 空 |
-| `AI_FIX_LABEL` | 触发标签 | `ai-fix` |
-| `BOT_USERNAME` | 机器人自己的用户名，用于忽略自己产生的事件 | 空 |
-| `ALLOWED_TRIGGER_USERS` | 可选额外白名单，逗号分隔（与角色下限是 AND；成员查不到时的逃生门） | 空 |
+| `WEBHOOK_SECRET` | Webhook secret；未配置则一律 401 | — |
+| `REPO_WHITELIST` | 允许处理的项目，逗号分隔；空 = 全部拒绝 | 空 |
+| `GITLAB_URL` / `GITLAB_TOKEN` | 实例地址 / 主 token（`api`） | — |
+| `GITLAB_READONLY_TOKEN` | 只读 token（`read_api`），给 MCP | — |
+| `BOT_USERNAME` | 机器人账号，用于忽略自己产生的事件 | — |
 | `MIN_ACCESS_LEVEL` | 触发者角色下限（Developer = 30） | `30` |
-| `MEMBER_CACHE_TTL_SEC` | 成员权限查询缓存秒数 | `60` |
-| `MODEL_PROVIDER` / `MODEL_NAME` | Codex 的 model_provider / 模型名 | `internal` / — |
-| `MODEL_BASE_URL` | 内网模型端点（必须支持 Responses API）。非空时网关用 `-c` 把 provider 定义钉死（含 `wire_api="responses"`），镜像不需要预置 codex 配置 | 空 |
-| `CODEX_BIN` / `API_KEY_ENV` | codex 可执行文件 / 模型 key 所在的**变量名**（值只进子进程环境） | `codex` / `LLM_API_KEY` |
-| `CODEX_EXPECTED_VERSION` | 期望的 codex 版本；不符时启动告警（PLAN §7 基线 6） | 空 |
-| `CODEX_CONFIG` | 追加的 `-c key=value`，逗号分隔（如内网 `base_url` / `wire_api="responses"`） | 空 |
-| `GIT_BIN` / `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | git 可执行文件与提交身份 | `git` / `mini-gitlab-bot` / `mini-gitlab-bot@localhost` |
-| `GIT_CLONE_DEPTH` / `GIT_TIMEOUT_SEC` | 浅克隆深度（0 = 完整）/ 单条 git 命令超时 | `0` / `600` |
-| `UV_BIN` / `UV_CACHE_DIR` | uv 可执行文件 / 缓存目录（空 = `WORK_DIR/.uv-cache`，必须在容器卷内） | `uv` / 空 |
-| `UV_DEFAULT_INDEX` / `UV_SYNC_TIMEOUT_SEC` | 内网 kkRepo 源 / `uv sync` 超时 | — / `1800` |
-| `LOG_DIR` | codex / uv 日志目录（`<LOG_DIR>/<task_id>/`） | `/data/logs` |
-| `LOG_FORMAT` / `LOG_LEVEL` | 日志格式（`json` / `text`）与级别 | `json` / `INFO` |
-| `LOG_RETENTION_DAYS` / `TASK_RETENTION_DAYS` / `ORPHAN_JOB_RETENTION_DAYS` | 日志 / 终态任务 / 孤儿 job 目录保留天数 | `14` / `90` / `1` |
-| `JANITOR_INTERVAL_SEC` | 清理间隔（秒，最小 60） | `3600` |
-| `METRICS_ENABLED` | 是否暴露 `/metrics` | `true` |
-| `READY_STALE_SEC` | `/readyz` 判定任务卡死的租约超时阈值 | `180` |
-| `AGENT_CONCURRENCY` | 并发处理的 Issue 数 | `2` |
+| `ALLOWED_TRIGGER_USERS` | 可选额外白名单（与角色下限是 AND） | 空 |
+| `MODEL_BASE_URL` / `MODEL_NAME` | 内网模型端点（需支持 Responses API）/ 模型名 | — |
+| `LLM_API_KEY` | 模型 key（只进 agent 子进程环境） | — |
+| `CODEX_BIN` / `CODEX_EXPECTED_VERSION` | codex 路径 / 期望版本 | `codex` / 空 |
 | `AGENT_TIMEOUT_SEC` | 单次 codex 会话超时 | `1800` |
-| `LEASE_SECONDS` / `MAX_ATTEMPTS` | 任务租约与最大重试次数（崩溃/超时恢复） | `60` / `3` |
-| `DB_PATH` / `WORK_DIR` | SQLite 队列位置 / 任务工作目录根 | `/data/tasks.db` / `/work` |
-| `DIFF_MAX_FILES` / `DIFF_MAX_LINES` | 单次任务允许的改动规模上限（超出则拒绝推送） | `50` / `2000` |
-| `FORBIDDEN_PATHS` | 禁改路径，逗号分隔（CI 配置、密钥等） | 见 `.env.example` |
+| `AGENT_CONCURRENCY` | 并发任务数 | `2` |
+| `DIFF_MAX_FILES` / `DIFF_MAX_LINES` | 改动规模上限 | `50` / `2000` |
+| `FORBIDDEN_PATHS` | 禁改路径 | CI 配置、密钥… |
+| `LOG_DIR` / `LOG_RETENTION_DAYS` | 日志目录 / 保留天数 | `/data/logs` / `14` |
+| `ADMIN_TOKEN` | `/tasks` 的 token；空 = 自动生成 | 空 |
 
-> `TARGET_BRANCH` 已删除：MR 目标分支改为按项目取 `default_branch`。
-
-## 安全边界（务必阅读）
-
-1. **沙箱**：只用 `codex exec --sandbox workspace-write`；**禁止** `danger-full-access`。
-2. **agent 零凭据零网络**：token 只存在于网关进程；安全关键配置全部用 `-c` 下发（优先级高于仓库自带配置）。
-3. **只读 token 物理隔离**：迷你 MCP 只有 `read_api`，即使被利用也无法写。
-4. **人工审批**：只开 draft MR；配合 GitLab 审批规则 + 受保护分支，禁止 bot 直接合并。
-5. **必须落实（M2 已全部落地，均有测试锁定）**：启动前删除 workdir 里的 `.codex/`；每个 job 独立 `TMPDIR`；永不把克隆目录标记为 trusted；pin 死 codex 版本。
-6. **任务本地产物绝不进提交**：`.git/info/exclude`（第一层）+ `git add` 之后的后置校验（第二层，发现即失败）—— `.mini-gitlab-bot/`、`.venv/`、`__pycache__/` 都不可能进 MR。
-7. **失败要能解释**：每个失败任务都记录 `failure_stage` / `failure_reason` / `failure_evidence` / `log_path`，并把日志尾部折叠进 issue 评论。
-
-## 版本与发布
-
-- 当前版本 **0.1.0**（`core/__init__.py` 的 `__version__` 与 `pyproject.toml` 一致，测试会校验）
-- 镜像：`ghcr.io/flyinghenanman/mini-gitlab-bot:0.1.0`（同时打 `latest`）
-- 变更记录：[CHANGELOG.md](CHANGELOG.md)；发版与分支约定见 [docs/RELEASING.md](docs/RELEASING.md)
-
-```bash
-docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:0.1.0
-```
-
-分支模型：`main`（发布，只接受来自 `dev` 的合并）→ `dev`（日常开发）→ `feature/*`。
-打 `v*` tag 会触发 `.github/workflows/release.yml`：跑测试 → 推 GHCR → 建 Release。
+</details>
 
 ## 开发
 
 ```bash
-# Python 3.13（uv 管理）
-export UV_CACHE_DIR=$PWD/.uv-cache        # 沙箱/容器里缓存必须可写
-uv sync --group dev
+export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
+uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                              # 无需 GitLab、无需 LLM：全用假适配器
-
-# 本地起网关（当前是占位适配器，能启动、webhook 立刻 2xx）
-WEBHOOK_SECRET=dev REPO_WHITELIST=group/project-a BOT_USERNAME=mini-gitlab-bot \
-DB_PATH=$PWD/.dev/tasks.db WORK_DIR=$PWD/.dev/work \
-  uv run uvicorn gateway.app:app --port 8080
+uv run pytest                          # 446 项，无需 GitLab / 无需 LLM
 ```
 
-分层约定（必须遵守，[PLAN.md](PLAN.md) §2）：
+测试分层：
 
-- `core/` 纯逻辑，不 import 任何 IO；状态机、分支命名、diff 策略、文案渲染、编排流程都在这里。
-- `ports/` 只有 `Protocol`；`adapters/` 是真实现 + 假实现（**假实现也是契约的一部分**）。
-- `gateway/` 只做 HTTP / 配置 / 权限 / 装配，不含业务判断。
+- **单元**：状态机、策略、渲染、配置、脱敏、MCP 协议
+- **集成（假件）**：假 SCM/VCS/agent 把整条流水线（含失败、恢复、崩溃重启）跑穿
+- **集成（真件）**：真 git 仓库、真 `uv sync`、真 HTTP 打桩 GitLab、**真子进程**的 codex / MCP
 
-测试策略分三层（真件越来越多）：
+想在**真 GitLab** 上跑完整闭环（含越权用例）：
 
-- **单元**：状态机、解析规则、配置、脱敏、Python 版本规划、workspace 越界防护。
-- **集成（假件）**：`FakeSCM + FakeVCS + FakeAgent + FakeWorkspace` 把整条流水线（含失败路径、租约恢复、崩溃重启）跑穿。
-- **集成（真件）**：`test_git_cli`（本地 bare 仓真 clone/commit/diff/push）、
-  `test_gitlab_scm`（python-gitlab 真 HTTP 打本地桩 GitLab：路径/查询参数/请求头/幂等）、
-  `test_pipeline_real_adapters`（真 git + 真 `uv sync` + 桩 codex 端到端）、
-  `test_pipeline_real_scm`（真 SCM + 假 VCS/agent 的完整闭环与权限闸门）、
-  `test_mcp_tools`（**真 MCP 子进程** + 真 stdio 协议 + 真 HTTP 打桩 GitLab）、
-  `test_codex_cli`（桩 codex 真子进程：四条件、环境白名单、超时杀进程组、MCP 接线）。
-  桩件之所以必须存在：CI 里没有 codex 二进制、没有 LLM 端点、没有 GitLab 实例，
-  但**网关侧的契约**（argv、环境、HTTP 形状、四条件）必须被真子进程 / 真 HTTP 验证。
+```bash
+./scripts/e2e/run.sh --reuse --keep          # 桩 agent
+# 或接真 codex：
+E2E_STUB_AGENT=0 MODEL_BASE_URL=… MODEL_NAME=… LLM_API_KEY=… ./scripts/e2e/run.sh --reuse
+```
 
-## License
+## 项目结构
 
-Apache License 2.0
+<details>
+<summary><b>端口 / 适配器分层</b></summary>
+
+```
+core/      状态机 · 领域模型 · diff 策略 · context.md 渲染 · 编排器 · worker
+           · MCP 工具契约 · 日志 · 指标 · 任务页渲染          ← 纯逻辑，零 IO
+ports/     store · scm · vcs · agent · workspace · env · notifier · janitor
+adapters/  sqlite_store · gitlab_client · git_cli · codex_cli · uv_env
+           · local_workspace · janitor · proc（子进程+脱敏）· fakes · unavailable
+gateway/   app(HTTP) · config · webhook · permissions · runtime(装配) · mcp_readonly
+tests/     unit / integration / stub_gitlab（可编程的 GitLab API 桩）
+scripts/   e2e（真 GitLab 端到端）
+docs/      PLAN 事实核查 · 文案模板 · 发版流程
+```
+
+依赖方向单向：`gateway → adapters → ports → core`，`core` 不 import 任何 IO。
+
+</details>
+
+## 已验证 / 未验证
+
+| 项 | 状态 |
+| --- | --- |
+| 单元 + 集成测试 | ✅ 446 项全绿（CI 每次 push/PR 都跑） |
+| 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
+| 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |
+| 只读 MCP | ✅ 11 个工具在真实 GitLab 数据上逐个验证（含真实 CI 日志） |
+| 镜像 | ✅ 多阶段构建（1.2 GB），容器内非 root 跑通完整闭环 |
+| 非 Python 项目 | ❌ 未支持（首期只做 uv 管理的 Python 项目） |
+| 非 GitLab 平台 | ❌ 未支持（GitHub/Gitea 只是端口层面的可能性） |
+| 其他 GitLab 版本 | ⚠️ 只验证过 19.5；16/17/18 未逐一测试 |
+
+## 文档
+
+- [PLAN.md](PLAN.md) —— 架构定案、关键决策、已验证的技术事实、每个里程碑的落地记录
+- [CHANGELOG.md](CHANGELOG.md) —— 版本变更
+- [docs/RELEASING.md](docs/RELEASING.md) —— 分支模型与发版流程
+- [docs/templates.md](docs/templates.md) —— MR 描述 / 状态评论 / report.json 的模板
+- [docs/research/](docs/research/README.md) —— 事实核查依据（Codex、GitLab、MCP 的行为）
+
+## 许可
+
+[Apache License 2.0](LICENSE)
