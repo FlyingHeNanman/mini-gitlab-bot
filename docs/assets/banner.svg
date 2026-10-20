@@ -16,13 +16,11 @@
 
   <rect width="1200" height="320" fill="url(#bg)"/>
   <rect width="1200" height="320" fill="url(#grid)"/>
-
-  <!-- 左上角的圆形光斑 -->
   <circle cx="120" cy="40" r="180" fill="#7aa2f7" opacity="0.10"/>
   <circle cx="1080" cy="300" r="200" fill="#a78bfa" opacity="0.10"/>
 
   <!-- 机器人标记 -->
-  <g transform="translate(78, 96)">
+  <g transform="translate(78, 92)">
     <rect x="0" y="0" width="64" height="64" rx="16" fill="url(#accent)" opacity="0.95"/>
     <circle cx="22" cy="26" r="5.5" fill="#0b1020"/>
     <circle cx="42" cy="26" r="5.5" fill="#0b1020"/>
@@ -31,46 +29,46 @@
     <circle cx="32" cy="-13" r="5" fill="#a78bfa"/>
   </g>
 
-  <text x="168" y="130" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif"
-        font-size="58" font-weight="700" fill="#f8fafc" letter-spacing="-1.5">mini-gitlab-bot</text>
+  <!-- 标题 -->
+  <text x="168" y="128" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif"
+        font-size="56" font-weight="700" fill="#f8fafc" letter-spacing="-1.5">mini-gitlab-bot</text>
 
-  <text x="170" y="176" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif"
-        font-size="22" fill="#a9b6cc">给 Issue 打个</text>
-  <rect x="290" y="152" width="92" height="34" rx="8" fill="#1e2a44" stroke="#33415c"/>
-  <text x="306" y="176" font-family="ui-monospace, Menlo, monospace" font-size="20" fill="#8be9fd">ai-fix</text>
-  <text x="398" y="176" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif"
-        font-size="22" fill="#a9b6cc">标签，机器人自动开 draft MR</text>
+  <!-- 副标题：ai-fix 用行内 tspan，避免胶囊挡住文字 -->
+  <text x="170" y="172" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif"
+        font-size="20" fill="#a9b6cc">打上 <tspan font-family="ui-monospace, Menlo, Consolas, monospace"
+        font-size="19" font-weight="700" fill="#8be9fd">ai-fix</tspan> 标签 → 机器人自动修复并开 draft MR</text>
 
-  <!-- 三个技术胶囊 -->
-  <g font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="16">
-    <rect x="170" y="212" width="132" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
-    <text x="190" y="236" fill="#cbd5e1">Codex CLI 内核</text>
+  <!-- 四个技术胶囊：文字居中，宽度按内容留足 -->
+  <g font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="15"
+     text-anchor="middle">
+    <rect x="168" y="204" width="116" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
+    <text x="226" y="227" fill="#cbd5e1">Codex CLI</text>
 
-    <rect x="316" y="212" width="112" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
-    <text x="336" y="236" fill="#cbd5e1">Python 网关</text>
+    <rect x="296" y="204" width="129" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
+    <text x="360.5" y="227" fill="#cbd5e1">Python 网关</text>
 
-    <rect x="442" y="212" width="150" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
-    <text x="462" y="236" fill="#cbd5e1">只读 MCP · 11 工具</text>
+    <rect x="437" y="204" width="125" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
+    <text x="499.5" y="227" fill="#cbd5e1">MCP · 11 工具</text>
 
-    <rect x="606" y="212" width="126" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
-    <text x="626" y="236" fill="#cbd5e1">零凭据 · 零网络</text>
+    <rect x="574" y="204" width="137" height="36" rx="18" fill="#0f172a" stroke="#2f3d5c"/>
+    <text x="642.5" y="227" fill="#cbd5e1">零凭据 · 零网络</text>
   </g>
 
-  <!-- 右侧的流水线示意 -->
-  <g transform="translate(790, 84)" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif">
-    <rect x="0" y="0" width="330" height="176" rx="16" fill="#0d1526" stroke="#27324a"/>
-    <text x="20" y="30" font-size="13" fill="#7d8aa5" letter-spacing="1.5">PIPELINE</text>
+  <!-- 右侧流水线示意 -->
+  <g transform="translate(800, 84)" font-family="-apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif">
+    <rect x="0" y="0" width="320" height="176" rx="16" fill="#0d1526" stroke="#27324a"/>
+    <text x="20" y="30" font-size="12" fill="#7d8aa5" letter-spacing="1.5">PIPELINE</text>
 
     <g font-size="14">
-      <circle cx="30" cy="58" r="4" fill="#7aa2f7"/><text x="44" y="63" fill="#cbd5e1">preparing</text>
-      <circle cx="30" cy="88" r="4" fill="#7aa2f7"/><text x="44" y="93" fill="#cbd5e1">running</text>
-      <circle cx="30" cy="118" r="4" fill="#7aa2f7"/><text x="44" y="123" fill="#cbd5e1">validating</text>
-      <circle cx="30" cy="148" r="4" fill="#7aa2f7"/><text x="44" y="153" fill="#cbd5e1">pushing</text>
+      <circle cx="30" cy="58" r="4" fill="#7aa2f7"/><text x="46" y="63" fill="#cbd5e1">preparing</text>
+      <circle cx="30" cy="88" r="4" fill="#7aa2f7"/><text x="46" y="93" fill="#cbd5e1">running</text>
+      <circle cx="30" cy="118" r="4" fill="#7aa2f7"/><text x="46" y="123" fill="#cbd5e1">validating</text>
+      <circle cx="30" cy="148" r="4" fill="#7aa2f7"/><text x="46" y="153" fill="#cbd5e1">pushing</text>
 
-      <circle cx="200" cy="58" r="4" fill="#a78bfa"/><text x="214" y="63" fill="#cbd5e1">opening_mr</text>
-      <circle cx="200" cy="88" r="4" fill="#34d399"/><text x="214" y="93" fill="#34d399">succeeded</text>
-      <circle cx="200" cy="118" r="4" fill="#f87171"/><text x="214" y="123" fill="#f87171">failed</text>
-      <circle cx="200" cy="148" r="4" fill="#fbbf24"/><text x="214" y="153" fill="#fbbf24">requeued</text>
+      <circle cx="196" cy="58" r="4" fill="#a78bfa"/><text x="212" y="63" fill="#cbd5e1">opening_mr</text>
+      <circle cx="196" cy="88" r="4" fill="#34d399"/><text x="212" y="93" fill="#34d399">succeeded</text>
+      <circle cx="196" cy="118" r="4" fill="#f87171"/><text x="212" y="123" fill="#f87171">failed</text>
+      <circle cx="196" cy="148" r="4" fill="#fbbf24"/><text x="212" y="153" fill="#fbbf24">requeued</text>
     </g>
   </g>
 </svg>
