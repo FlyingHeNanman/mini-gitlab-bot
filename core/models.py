@@ -12,14 +12,16 @@ from enum import StrEnum
 from typing import Any
 
 from core import layout
-from core.states import TaskState, is_terminal
+from core.states import TaskKind, TaskState, is_terminal
 
 
 class TriggerKind(StrEnum):
-    """触发来源：标签状态机（主要用法）或评论命令。"""
+    """触发来源：标签状态机、评论命令、或新 issue 自动巡检。"""
 
     LABEL = "label"
     COMMENT = "comment"
+    ISSUE_OPEN = "issue_open"
+    MERGE = "merge"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +48,9 @@ class Trigger:
     command: str | None = None  # run | retry
     issue_labels: tuple[str, ...] = ()
     source: str = ""  # 触发处的 web_url，供追溯
+    #: explain 任务用：合并请求 iid 与合并提交 sha（幂等键 `mr:<iid>:<sha>`）
+    mr_iid: int | None = None
+    subject_sha: str | None = None
 
 
 @dataclass(slots=True)
@@ -63,6 +68,12 @@ class Task:
     trigger_actor_id: int | None = None
     command: str | None = None
     state: TaskState = TaskState.QUEUED
+    #: 任务类型；fix 是本项目最早、最完整的流水线，保持默认值以兼容旧数据
+    kind: TaskKind = TaskKind.FIX
+    #: 活跃去重键：同一 issue 的 fix 与 triage 互不阻塞；explain 用 `mr:<iid>:<sha>`
+    subject_key: str | None = None
+    #: 自动派生任务的来源（例如 triage 派生的 fix）
+    parent_task_id: str | None = None
     attempts: int = 0
     max_attempts: int = 3
     lease_owner: str | None = None
@@ -79,6 +90,8 @@ class Task:
     workdir: str | None = None
     log_path: str | None = None
     report: dict[str, Any] = field(default_factory=dict)
+    #: triage 结论 / 复现命令 / 回归测试 patch 等结构化中间产物
+    payload: dict[str, Any] = field(default_factory=dict)
     finished_at: datetime | None = None
 
     @property
@@ -123,6 +136,7 @@ UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "workdir",
         "log_path",
         "report",
+        "payload",
         "finished_at",
     }
 )

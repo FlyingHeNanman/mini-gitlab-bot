@@ -96,7 +96,7 @@ class GitCli:
     # 端口实现
     # ------------------------------------------------------------------ #
 
-    async def prepare_workdir(self, task: Task, *, base_branch: str, branch: str) -> Workdir:
+    async def prepare_workdir(self, task: Task, *, base_branch: str, branch: str | None) -> Workdir:
         self._root.mkdir(parents=True, exist_ok=True)
         job = self._root / task.id
         if job.exists():  # 重试时残留的旧目录：先清掉，避免 clone 撞车
@@ -108,9 +108,10 @@ class GitCli:
         argv += [self.remote_url(task.project.path), str(job)]
         await self._git_run(argv, stage="clone", cwd=str(self._root))
 
-        await self._git_run(
-            self._git_argv(job, "checkout", "--quiet", "-b", branch), stage="checkout"
-        )
+        if branch is not None:  # None = 只读检出（triage/explain）：不建分支
+            await self._git_run(
+                self._git_argv(job, "checkout", "--quiet", "-b", branch), stage="checkout"
+            )
         await self._git_run(
             self._git_argv(job, "config", "user.name", self._author_name), stage="config"
         )
@@ -118,7 +119,7 @@ class GitCli:
             self._git_argv(job, "config", "user.email", self._author_email), stage="config"
         )
         await self._write_git_exclude(job)
-        return Workdir(path=str(job), branch=branch, base_branch=base_branch)
+        return Workdir(path=str(job), branch=branch or base_branch, base_branch=base_branch)
 
     async def commit_all(self, task: Task, workdir: Workdir, *, message: str) -> str | None:
         """兜底提交，返回 HEAD；分支相对基线没有任何新提交时返回 None。

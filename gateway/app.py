@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 
 from core import __version__
 from core.logging_setup import attach_uvicorn_loggers, configure_logging
+from core.models import TriggerKind
 from core.states import ACTIVE_STATES, TaskState
 from core.tasks_view import TaskFilters, render_task_detail, render_tasks_page, task_to_dict
 from gateway.config import Settings
@@ -279,22 +280,27 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
                 return JSONResponse({"status": "ignored", "reason": parsed.reason})
 
             trigger = parsed.trigger
-            decision = await checker.check(
-                project_id=trigger.project.project_id,
-                user_id=trigger.actor.user_id,
-                username=trigger.actor.username,
-            )
-            if not decision.allowed:
-                logger.warning(
-                    "触发被权限闸门拒绝：user=%s project=%s issue=#%s reason=%s",
-                    trigger.actor.username,
-                    trigger.project.path,
-                    trigger.issue_iid,
-                    decision.reason,
+            if trigger.kind is TriggerKind.ISSUE_OPEN and not settings.triage_enabled:
+                return JSONResponse({"status": "ignored", "reason": "triage_disabled"})
+
+            # 只有人工命令（标签 / 评论）过权限闸门；新 issue 的自动巡检对所有人生效
+            if trigger.kind in (TriggerKind.LABEL, TriggerKind.COMMENT):
+                decision = await checker.check(
+                    project_id=trigger.project.project_id,
+                    user_id=trigger.actor.user_id,
+                    username=trigger.actor.username,
                 )
-                return JSONResponse(
-                    {"status": "ignored", "reason": f"permission_denied:{decision.reason}"}
-                )
+                if not decision.allowed:
+                    logger.warning(
+                        "触发被权限闸门拒绝：user=%s project=%s issue=#%s reason=%s",
+                        trigger.actor.username,
+                        trigger.project.path,
+                        trigger.issue_iid,
+                        decision.reason,
+                    )
+                    return JSONResponse(
+                        {"status": "ignored", "reason": f"permission_denied:{decision.reason}"}
+                    )
 
             outcome = rt.store.enqueue(trigger, now=rt.clock(), max_attempts=settings.max_attempts)
             logger.info(

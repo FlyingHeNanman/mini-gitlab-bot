@@ -6,7 +6,9 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
-from adapters.fakes import FakeSCM
+from adapters.fakes import FakeAgent, FakeSCM, default_agent_result
+from core.models import TriggerKind
+from core.states import TaskKind, TaskState
 from gateway.app import create_app
 from tests.payloads import headers, issue_payload, note_payload
 
@@ -105,7 +107,7 @@ async def test_duplicate_delivery_is_answered_but_not_requeued(make_runtime, set
     [
         (issue_payload(path="other/repo"), headers(), "project_not_whitelisted"),
         (issue_payload(previous=("ai-fix",), current=()), headers(), "ai_fix_label_not_added"),
-        (issue_payload(action="open", change_labels=False), headers(), "not_an_update_action"),
+        (issue_payload(action="open", change_labels=False), headers(), "triage_disabled"),
         (
             note_payload(note="added ~ai-fix label", system=True),
             headers(event="Note Hook", delivery="sys-1"),
@@ -123,6 +125,26 @@ async def test_ignored_events_still_return_200(
     assert response.status_code == 200
     assert response.json() == {"status": "ignored", "reason": reason}
     assert runtime.store.count() == 0
+
+
+async def test_open_issue_queues_triage_without_permission_gate(make_runtime, settings) -> None:
+    """新 issue 的自动巡检对所有人生效：非成员也能触发（人工命令才过闸门）。"""
+    runtime, _ = make_runtime(scm=FakeSCM(access_levels={}))
+    enabled = settings.model_copy(update={"triage_enabled": True})
+    app = create_app(settings=enabled, runtime=runtime)
+    response = await post(
+        app,
+        issue_payload(action="open", change_labels=False, current=()),
+        headers(delivery="triage-1"),
+    )
+    body = response.json()
+    assert body["status"] == "queued"
+    task = runtime.store.get(body["task_id"])
+    assert task is not None
+    assert task.kind is TaskKind.TRIAGE
+    assert task.trigger_kind is TriggerKind.ISSUE_OPEN
+    assert task.subject_key == "issue:12"
+    assert runtime.store.count() == 1
 
 
 async def test_reporter_is_denied_by_permission_gate(make_runtime, settings) -> None:
@@ -195,3 +217,36 @@ async def test_no_route_exposes_task_internals_without_a_token(make_runtime, set
     assert response.status_code == 401
     assert "group/project-a" not in response.text
     assert (await get(app, "/")).status_code == 404
+
+
+async def test_open_issue_full_triage_flow(make_runtime, settings) -> None:
+    """webhook → 入队 → worker → 标签/评论，整条链路在假件上跑通。"""
+    report = {
+        "verdict": "confirmed",
+        "confidence": 0.8,
+        "summary": "确认可以复现",
+        "repro": {"result": "reproduced", "evidence": "AssertionError"},
+        "location": {"files": ["gateway/config.py:42"]},
+        "labels": {"type": "缺陷", "severity": "一般"},
+        "recommendation": "assign",
+    }
+    runtime, scm = make_runtime(
+        agent=FakeAgent(result=default_agent_result(report=report)),
+        with_worker=True,
+    )
+    enabled = settings.model_copy(update={"triage_enabled": True})
+    app = create_app(settings=enabled, runtime=runtime)
+    response = await post(
+        app,
+        issue_payload(action="open", change_labels=False, current=()),
+        headers(delivery="triage-e2e"),
+    )
+    body = response.json()
+    assert body["status"] == "queued"
+
+    assert await runtime.worker.drain() == 1
+    task = runtime.store.get(body["task_id"])
+    assert task.state is TaskState.SUCCEEDED
+    assert "类型：缺陷" in scm.current_labels
+    assert "组件：gateway" in scm.current_labels
+    assert any("自动巡检结论" in c["body"] for c in scm.comments)

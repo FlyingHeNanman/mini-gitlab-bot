@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 
 from core.logging_setup import bind_task
 from core.models import ReapOutcome, Task
+from core.states import TaskKind
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,14 @@ class Worker:
         on_task_failed: Callable[[Task], Awaitable[None]] | None = None,
         janitor=None,
         metrics=None,
+        kinds: Sequence[TaskKind] | None = None,
     ) -> None:
         self._store = store
         self._orchestrator = orchestrator
         self._owner = owner
+        #: 这个 worker 允许领取的任务类型。triage/explain 的编排器落地前默认只跑 fix，
+        #: 避免「新简历的 triage 任务被当成修复任务执行」。
+        self._kinds = tuple(kinds) if kinds is not None else (TaskKind.FIX,)
         self._concurrency = max(1, concurrency)
         self._lease_seconds = lease_seconds
         self._heartbeat_interval_sec = heartbeat_interval_sec or max(5, lease_seconds // 3)
@@ -98,7 +103,10 @@ class Worker:
     async def step(self) -> bool:
         """领取并**同步跑完**一个任务；返回是否真的领到了任务。"""
         task = self._store.claim_next(
-            owner=self._owner, now=self._clock(), lease_seconds=self._lease_seconds
+            owner=self._owner,
+            now=self._clock(),
+            lease_seconds=self._lease_seconds,
+            kinds=self._kinds,
         )
         if task is None:
             return False
@@ -150,7 +158,10 @@ class Worker:
     def _fill(self) -> None:
         while len(self._inflight) < self._concurrency:
             task = self._store.claim_next(
-                owner=self._owner, now=self._clock(), lease_seconds=self._lease_seconds
+                owner=self._owner,
+                now=self._clock(),
+                lease_seconds=self._lease_seconds,
+                kinds=self._kinds,
             )
             if task is None:
                 return

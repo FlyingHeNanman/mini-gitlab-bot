@@ -40,6 +40,9 @@ from core.metrics import Metrics
 from core.models import Task
 from core.orchestrator import OrchestratorConfig, TaskOrchestrator
 from core.policy import DiffPolicy
+from core.router import KindRouter
+from core.states import TaskKind
+from core.triage_orchestrator import TriageOrchestrator
 from core.worker import Worker
 from gateway.config import Settings
 
@@ -64,6 +67,8 @@ class Runtime:
     env: Any
     notifier: Any
     orchestrator: TaskOrchestrator
+    triage_orchestrator: TriageOrchestrator
+    router: KindRouter
     worker: Worker | None
     clock: Callable[[], datetime]
     metrics: Metrics
@@ -121,6 +126,18 @@ def build_runtime(
         ),
         clock=clock,
     )
+    triage = TriageOrchestrator(
+        store=store,
+        scm=scm,
+        vcs=vcs,
+        agent=agent,
+        workspace=workspace,
+        env=env,
+        metrics=metrics,
+        clock=clock,
+        timeout_sec=settings.agent_timeout_sec,
+    )
+    router = KindRouter({TaskKind.FIX: orchestrator, TaskKind.TRIAGE: triage})
 
     worker: Worker | None = None
     if with_worker and settings.worker_enabled:
@@ -128,7 +145,7 @@ def build_runtime(
         async def _on_task_failed(task: Task) -> None:
             """看门狗判失败后的收尾：状态由 store 记录，这里补标签与评论。"""
             fresh = store.get(task.id) or task
-            await orchestrator.finalize_failure(
+            await router.finalize_failure(
                 fresh,
                 stage=fresh.failure_stage or "watchdog",
                 reason=fresh.failure_reason or "任务租约过期",
@@ -137,13 +154,14 @@ def build_runtime(
 
         worker = Worker(
             store=store,
-            orchestrator=orchestrator,
+            orchestrator=router,
             owner=settings.worker_owner,
             concurrency=settings.agent_concurrency,
             lease_seconds=settings.lease_seconds,
             poll_interval_sec=settings.poll_interval_sec,
             clock=clock,
             on_task_failed=_on_task_failed,
+            kinds=router.kinds(),
         )
 
     return Runtime(
@@ -156,6 +174,8 @@ def build_runtime(
         env=env,
         notifier=notifier,
         orchestrator=orchestrator,
+        triage_orchestrator=triage,
+        router=router,
         worker=worker,
         clock=clock,
         metrics=metrics,

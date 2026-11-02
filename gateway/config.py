@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # ---------- 触发闸门 ----------
     repo_whitelist: CsvList = Field(default_factory=list)
     ai_fix_label: str = "ai-fix"
+    #: 新 issue 自动巡检总开关（M6 目前只完成了入队与标签契约，执行器落地后再默认开）
+    triage_enabled: bool = False
     bot_username: str = ""
     allowed_trigger_users: CsvList = Field(default_factory=list)
     min_access_level: int = 30  # Developer（PLAN §7 加固基线 8）

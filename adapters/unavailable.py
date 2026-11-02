@@ -48,6 +48,14 @@ class UnavailableSCM:
     async def load_issue_context(self, task: Task) -> IssueContext:
         self._boom()
 
+    async def list_labels(self, project_id: int) -> tuple[str, ...]:
+        self._boom()
+
+    async def create_label(
+        self, project_id: int, *, name: str, color: str, description: str
+    ) -> None:
+        self._boom()
+
     async def set_labels(
         self, task: Task, *, add: Sequence[str] = (), remove: Sequence[str] = ()
     ) -> None:
@@ -77,7 +85,7 @@ class UnavailableVCS:
     def _boom(self) -> Any:
         raise AdapterUnavailable("GitCli(VCS)", self._milestone)
 
-    async def prepare_workdir(self, task: Task, *, base_branch: str, branch: str) -> Workdir:
+    async def prepare_workdir(self, task: Task, *, base_branch: str, branch: str | None) -> Workdir:
         self._boom()
 
     async def commit_all(self, task: Task, workdir: Workdir, *, message: str) -> str | None:

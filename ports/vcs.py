@@ -17,8 +17,12 @@ from core.models import DiffSummary, Task, Workdir
 
 
 class VCS(Protocol):
-    async def prepare_workdir(self, task: Task, *, base_branch: str, branch: str) -> Workdir:
-        """为本次 job 分配独立目录、clone 仓库、切出工作分支。"""
+    async def prepare_workdir(self, task: Task, *, base_branch: str, branch: str | None) -> Workdir:
+        """为本次 job 分配独立目录并 clone 仓库。
+
+        `branch=None` 表示**只读检出**（triage / explain 用）：不建分支，直接停在
+        `base_branch`。`Workdir.branch` 此时等于 `base_branch`。
+        """
         ...
 
     async def commit_all(self, task: Task, workdir: Workdir, *, message: str) -> str | None:

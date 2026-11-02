@@ -102,6 +102,14 @@ class GitLabSCM:
     async def load_issue_context(self, task: Task) -> IssueContext:
         return await self._run("读取 issue", self._load_issue, task)
 
+    async def list_labels(self, project_id: int) -> tuple[str, ...]:
+        return await self._run("读取标签", self._list_labels, project_id)
+
+    async def create_label(
+        self, project_id: int, *, name: str, color: str, description: str
+    ) -> None:
+        await self._run("创建标签", self._create_label, project_id, name, color, description)
+
     # ------------------------------------------------------------------ #
     # 写
     # ------------------------------------------------------------------ #
@@ -184,6 +192,22 @@ class GitLabSCM:
             state=str(getattr(issue, "state", "opened") or "opened"),
             comments=tuple(comments),
         )
+
+    def _list_labels(self, project_id: int) -> tuple[str, ...]:
+        project = self._get_project(project_id)
+        return tuple(str(item.name) for item in project.labels.list(iterator=True))
+
+    def _create_label(self, project_id: int, name: str, color: str, description: str) -> Any:
+        project = self._get_project(project_id)
+        try:
+            return project.labels.create({"name": name, "color": color, "description": description})
+        except GitlabCreateError as exc:
+            message = str(getattr(exc, "error_message", "") or exc)
+            code = getattr(exc, "response_code", 0)
+            # 并发 / 重跑时"已存在"按幂等成功处理
+            if "already exists" in message.lower() or code in (400, 409):
+                return None
+            raise
 
     def _set_labels(self, task: Task, add: tuple[str, ...], remove: tuple[str, ...]) -> Any:
         payload: dict[str, str] = {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from core.labels import SKIP_LABEL
 from core.models import TriggerKind
 from gateway.webhook import delivery_key, parse_command, parse_webhook, verify_token
 from tests.payloads import headers, issue_payload, note_payload
@@ -62,12 +63,23 @@ def test_label_removed_does_not_trigger(settings) -> None:
     assert event.reason == "ai_fix_label_not_added"
 
 
-def test_open_action_without_label_change_is_ignored(settings) -> None:
+def test_open_action_triggers_triage(settings) -> None:
+    event = _parse(issue_payload(action="open", change_labels=False, current=()), settings=settings)
+    assert event.trigger is not None
+    assert event.reason == "issue_opened"
+    trigger = event.trigger
+    assert trigger.kind is TriggerKind.ISSUE_OPEN
+    assert trigger.issue_iid == 12
+    assert trigger.issue_labels == ()
+
+
+def test_open_action_with_bot_skip_label_is_ignored(settings) -> None:
     event = _parse(
-        issue_payload(action="open", change_labels=False, current=("ai-fix",)), settings=settings
+        issue_payload(action="open", change_labels=False, current=(SKIP_LABEL,)),
+        settings=settings,
     )
     assert event.trigger is None
-    assert event.reason == "not_an_update_action"
+    assert event.reason == "bot_skipped"
 
 
 def test_closed_issue_is_ignored(settings) -> None:

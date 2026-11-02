@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,7 +31,14 @@ from core.models import (
     Trigger,
     TriggerKind,
 )
-from core.states import ACTIVE_STATES, TERMINAL_STATES, TaskState, can_requeue, ensure_transition
+from core.states import (
+    ACTIVE_STATES,
+    TERMINAL_STATES,
+    TaskKind,
+    TaskState,
+    can_requeue,
+    ensure_transition_for,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -45,6 +52,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     trigger_actor_id  INTEGER,
     command           TEXT,
     state             TEXT NOT NULL,
+    kind              TEXT NOT NULL DEFAULT 'fix',
+    subject_key       TEXT,
+    parent_task_id    TEXT,
     attempts          INTEGER NOT NULL DEFAULT 0,
     max_attempts      INTEGER NOT NULL DEFAULT 3,
     lease_owner       TEXT,
@@ -61,18 +71,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     workdir           TEXT,
     log_path          TEXT,
     report_json       TEXT NOT NULL DEFAULT '{}',
+    payload_json      TEXT NOT NULL DEFAULT '{}',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
     finished_at       TEXT
 );
-
--- 同一 issue 同时只能有一个非终态任务（字面量必须与 core.states 保持一致）
-CREATE UNIQUE INDEX IF NOT EXISTS ux_tasks_active_issue
-    ON tasks(project_id, issue_iid)
-    WHERE state NOT IN ('succeeded', 'failed');
-
-CREATE INDEX IF NOT EXISTS ix_tasks_state ON tasks(state, created_at);
-CREATE INDEX IF NOT EXISTS ix_tasks_lease ON tasks(lease_expires_at);
 
 CREATE TABLE IF NOT EXISTS task_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +84,18 @@ CREATE TABLE IF NOT EXISTS task_events (
     kind        TEXT NOT NULL,
     detail_json TEXT NOT NULL DEFAULT '{}'
 );
+"""
 
+#: 索引必须在迁移**之后**建：老库的 tasks 表还没有 kind / subject_key 列。
+_INDEXES = """
+-- 同一 (项目, kind, 去重键) 同时只能有一个非终态任务（字面量必须与 core.states 保持一致）。
+-- fix/triage 用 `issue:<iid>`，explain 用 `mr:<iid>:<sha>`，所以三种任务互不阻塞。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tasks_active_subject
+    ON tasks(project_id, kind, subject_key)
+    WHERE state NOT IN ('succeeded', 'failed');
+
+CREATE INDEX IF NOT EXISTS ix_tasks_state ON tasks(state, created_at);
+CREATE INDEX IF NOT EXISTS ix_tasks_lease ON tasks(lease_expires_at);
 CREATE INDEX IF NOT EXISTS ix_events_task ON task_events(task_id, id);
 """
 
@@ -100,6 +114,39 @@ def _dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """把 v0.1 的库升级到带 kind / subject_key 的 v0.2（幂等，可反复执行）。"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    additions = {
+        "kind": "TEXT NOT NULL DEFAULT 'fix'",
+        "subject_key": "TEXT",
+        "parent_task_id": "TEXT",
+        "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, ddl in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
+    # 老数据没有 subject_key：按 issue 回填，保证新的部分唯一索引仍然成立
+    conn.execute("UPDATE tasks SET subject_key='issue:'||issue_iid WHERE subject_key IS NULL")
+    conn.execute("DROP INDEX IF EXISTS ux_tasks_active_issue")
+
+
+def _infer_kind(trigger: Trigger) -> TaskKind:
+    """没显式指定任务类型时，按触发来源推断。"""
+    if trigger.kind is TriggerKind.ISSUE_OPEN:
+        return TaskKind.TRIAGE
+    if trigger.kind is TriggerKind.MERGE:
+        return TaskKind.EXPLAIN
+    return TaskKind.FIX
+
+
+def _default_subject_key(kind: TaskKind, trigger: Trigger) -> str:
+    """活跃去重键：explain 按 MR + merge sha，fix/triage 按 issue。"""
+    if kind is TaskKind.EXPLAIN:
+        return f"mr:{trigger.mr_iid}:{trigger.subject_sha}"
+    return f"issue:{trigger.issue_iid}"
+
+
 def _row_to_task(row: sqlite3.Row) -> Task:
     return Task(
         id=row["id"],
@@ -111,6 +158,9 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         trigger_actor_id=row["trigger_actor_id"],
         command=row["command"],
         state=TaskState(row["state"]),
+        kind=TaskKind(row["kind"] or "fix"),
+        subject_key=row["subject_key"],
+        parent_task_id=row["parent_task_id"],
         attempts=row["attempts"],
         max_attempts=row["max_attempts"],
         lease_owner=row["lease_owner"],
@@ -127,6 +177,7 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         workdir=row["workdir"],
         log_path=row["log_path"],
         report=json.loads(row["report_json"] or "{}"),
+        payload=json.loads(row["payload_json"] or "{}"),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         finished_at=_dt(row["finished_at"]),
@@ -155,6 +206,8 @@ class SqliteStore:
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA busy_timeout=5000")
                 conn.executescript(_SCHEMA)
+                _migrate(conn)
+                conn.executescript(_INDEXES)
                 self._conn = conn
             return self._conn
 
@@ -162,7 +215,19 @@ class SqliteStore:
     # 入队（幂等）
     # ------------------------------------------------------------------ #
 
-    def enqueue(self, trigger: Trigger, *, now: datetime, max_attempts: int = 3) -> EnqueueOutcome:
+    def enqueue(
+        self,
+        trigger: Trigger,
+        *,
+        now: datetime,
+        max_attempts: int = 3,
+        kind: TaskKind | None = None,
+        subject_key: str | None = None,
+        payload: dict[str, Any] | None = None,
+        parent_task_id: str | None = None,
+    ) -> EnqueueOutcome:
+        kind = kind or _infer_kind(trigger)
+        subject = subject_key or _default_subject_key(kind, trigger)
         with self._lock:
             duplicate = self._fetch_one(
                 "SELECT * FROM tasks WHERE delivery_key=?", (trigger.delivery_key,)
@@ -171,9 +236,9 @@ class SqliteStore:
                 return EnqueueOutcome(False, "duplicate_delivery", _row_to_task(duplicate))
 
             active = self._fetch_one(
-                "SELECT * FROM tasks WHERE project_id=? AND issue_iid=?"
+                "SELECT * FROM tasks WHERE project_id=? AND kind=? AND subject_key=?"
                 f" AND state IN {_ACTIVE_SQL} ORDER BY created_at DESC LIMIT 1",
-                (trigger.project.project_id, trigger.issue_iid),
+                (trigger.project.project_id, kind.value, subject),
             )
             if active is not None:
                 return EnqueueOutcome(False, "active_task_exists", _row_to_task(active))
@@ -187,6 +252,10 @@ class SqliteStore:
                 trigger_actor=trigger.actor.username,
                 trigger_actor_id=trigger.actor.user_id,
                 command=trigger.command,
+                kind=kind,
+                subject_key=subject,
+                parent_task_id=parent_task_id,
+                payload=dict(payload or {}),
                 max_attempts=max_attempts,
                 created_at=now,
                 updated_at=now,
@@ -202,9 +271,13 @@ class SqliteStore:
                 "trigger_actor_id": task.trigger_actor_id,
                 "command": task.command,
                 "state": task.state.value,
+                "kind": task.kind.value,
+                "subject_key": task.subject_key,
+                "parent_task_id": task.parent_task_id,
                 "attempts": task.attempts,
                 "max_attempts": task.max_attempts,
                 "report_json": "{}",
+                "payload_json": json.dumps(task.payload, ensure_ascii=False),
                 "created_at": _iso(now),
                 "updated_at": _iso(now),
             }
@@ -217,14 +290,16 @@ class SqliteStore:
                         tuple(values.values()),
                     )
             except sqlite3.IntegrityError:
-                # 竞态：并发投递刚建了单（同一 delivery，或同一 issue 的活跃任务）
-                return self._describe_conflict(trigger)
+                # 竞态：并发投递刚建了单（同一 delivery，或同一 subject 的活跃任务）
+                return self._describe_conflict(trigger, kind=kind, subject=subject)
 
         self.append_event(
             task.id,
             "enqueued",
             {
                 "kind": trigger.kind.value,
+                "task_kind": kind.value,
+                "subject_key": subject,
                 "actor": trigger.actor.username,
                 "command": trigger.command,
                 "delivery_key": trigger.delivery_key,
@@ -233,7 +308,9 @@ class SqliteStore:
         )
         return EnqueueOutcome(True, "created", task)
 
-    def _describe_conflict(self, trigger: Trigger) -> EnqueueOutcome:
+    def _describe_conflict(
+        self, trigger: Trigger, *, kind: TaskKind, subject: str
+    ) -> EnqueueOutcome:
         """并发插入撞唯一约束时，判断到底撞的是哪个约束。"""
         same_delivery = self._fetch_one(
             "SELECT * FROM tasks WHERE delivery_key=?", (trigger.delivery_key,)
@@ -241,9 +318,9 @@ class SqliteStore:
         if same_delivery is not None:
             return EnqueueOutcome(False, "duplicate_delivery", _row_to_task(same_delivery))
         active = self._fetch_one(
-            "SELECT * FROM tasks WHERE project_id=? AND issue_iid=?"
+            "SELECT * FROM tasks WHERE project_id=? AND kind=? AND subject_key=?"
             f" AND state IN {_ACTIVE_SQL} ORDER BY created_at DESC LIMIT 1",
-            (trigger.project.project_id, trigger.issue_iid),
+            (trigger.project.project_id, kind.value, subject),
         )
         return EnqueueOutcome(
             False, "active_task_exists", _row_to_task(active) if active is not None else None
@@ -280,12 +357,29 @@ class SqliteStore:
     # 队列与租约
     # ------------------------------------------------------------------ #
 
-    def claim_next(self, *, owner: str, now: datetime, lease_seconds: int) -> Task | None:
+    def claim_next(
+        self,
+        *,
+        owner: str,
+        now: datetime,
+        lease_seconds: int,
+        kinds: Sequence[TaskKind] | None = None,
+    ) -> Task | None:
+        """领一个排队任务。有 kind 限制时按 triage > explain > fix 的优先级取。"""
         expires = _iso(now + timedelta(seconds=lease_seconds))
+        sql = "SELECT id FROM tasks WHERE state='queued'"
+        params: list[str] = []
+        if kinds:
+            placeholders = ", ".join("?" for _ in kinds)
+            sql += f" AND kind IN ({placeholders})"
+            params = [item.value for item in kinds]
+        # 固定优先级：triage 最不容易被长 fix 饿死；同一优先级按先来后到
+        sql += (
+            " ORDER BY CASE kind WHEN 'triage' THEN 0 WHEN 'explain' THEN 1 ELSE 2 END,"
+            " created_at, id LIMIT 1"
+        )
         with self._tx() as conn:
-            row = conn.execute(
-                "SELECT id FROM tasks WHERE state='queued' ORDER BY created_at, id LIMIT 1"
-            ).fetchone()
+            row = conn.execute(sql, params).fetchone()
             if row is None:
                 return None
             task_id = row["id"]
@@ -352,7 +446,8 @@ class SqliteStore:
         with self._lock:
             row = self._require_row(task_id)
             current = TaskState(row["state"])
-            ensure_transition(current, to)
+            kind = TaskKind(row["kind"] or "fix")
+            ensure_transition_for(kind, current, to)
             updates = self._sanitize(fields)
             updates["state"] = to.value
             if to in TERMINAL_STATES:
@@ -381,7 +476,8 @@ class SqliteStore:
         with self._lock:
             row = self._require_row(task_id)
             current = TaskState(row["state"])
-            ensure_transition(current, TaskState.FAILED)
+            kind = TaskKind(row["kind"] or "fix")
+            ensure_transition_for(kind, current, TaskState.FAILED)
             fields = {
                 "state": TaskState.FAILED.value,
                 "failure_stage": stage,
@@ -529,6 +625,8 @@ class SqliteStore:
         for key, value in fields.items():
             if key == "report":
                 updates["report_json"] = json.dumps(value or {}, ensure_ascii=False, default=str)
+            elif key == "payload":
+                updates["payload_json"] = json.dumps(value or {}, ensure_ascii=False, default=str)
             elif isinstance(value, datetime):
                 updates[key] = _iso(value)
             elif isinstance(value, TaskState):

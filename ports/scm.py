@@ -31,6 +31,16 @@ class SCM(Protocol):
 
     async def load_issue_context(self, task: Task) -> IssueContext: ...
 
+    async def list_labels(self, project_id: int) -> tuple[str, ...]:
+        """项目里已有的标签名（`ensure_labels` 幂等创建用）。"""
+        ...
+
+    async def create_label(
+        self, project_id: int, *, name: str, color: str, description: str
+    ) -> None:
+        """创建一个标签；已存在时实现应当**静默成功**（幂等）。"""
+        ...
+
     # ---- 写 ----
 
     async def set_labels(

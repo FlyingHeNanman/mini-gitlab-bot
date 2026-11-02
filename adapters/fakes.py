@@ -62,10 +62,12 @@ class FakeSCM:
         issue_body: str = "复现：给一个没有任何标签的 issue 调用 parse_labels()",
         comments: Sequence[str] = ("我也遇到了这个问题",),
         access_levels: dict[int, int] | None = None,
+        project_labels: Sequence[str] = (),
         fail_on: Sequence[str] = (),
     ) -> None:
         self.default_branch_value = default_branch
         self.current_labels: set[str] = set(labels)
+        self.project_labels: set[str] = set(project_labels)
         self.issue_title = issue_title
         self.issue_body = issue_body
         self.issue_comments = tuple(comments)
@@ -76,6 +78,7 @@ class FakeSCM:
         self.label_changes: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
         self.member_lookups: list[tuple[int, int]] = []
         self.comments: list[dict[str, Any]] = []
+        self.created_labels: list[dict[str, Any]] = []
         self.mr_descriptions: list[str] = []
         self.merge_requests: list[MergeRequestRef] = []
         self.issue_loads: list[str] = []
@@ -109,6 +112,17 @@ class FakeSCM:
             labels=tuple(sorted(self.current_labels)),
             comments=self.issue_comments,
         )
+
+    async def list_labels(self, project_id: int) -> tuple[str, ...]:
+        self._maybe_fail("list_labels")
+        return tuple(sorted(self.project_labels))
+
+    async def create_label(
+        self, project_id: int, *, name: str, color: str, description: str
+    ) -> None:
+        self._maybe_fail("create_label")
+        self.project_labels.add(name)
+        self.created_labels.append({"name": name, "color": color, "description": description})
 
     # ---- 写 ----
 
@@ -171,10 +185,12 @@ class FakeVCS:
         if method in self.fail_on:
             raise RuntimeError(f"FakeVCS.{method} 注入故障")
 
-    async def prepare_workdir(self, task: Task, *, base_branch: str, branch: str) -> Workdir:
+    async def prepare_workdir(self, task: Task, *, base_branch: str, branch: str | None) -> Workdir:
         self._maybe_fail("prepare_workdir")
         self.prepare_calls.append((task.id, base_branch, branch))
-        return Workdir(path=f"/tmp/fake-jobs/{task.id}", branch=branch, base_branch=base_branch)
+        return Workdir(
+            path=f"/tmp/fake-jobs/{task.id}", branch=branch or base_branch, base_branch=base_branch
+        )
 
     async def commit_all(self, task: Task, workdir: Workdir, *, message: str) -> str | None:
         self._maybe_fail("commit_all")

@@ -17,6 +17,14 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class TaskKind(StrEnum):
+    """任务类型。同一条 issue 上可以并存不同类型的活跃任务。"""
+
+    FIX = "fix"
+    TRIAGE = "triage"
+    EXPLAIN = "explain"
+
+
 class TaskState(StrEnum):
     """任务状态。取值同时是 SQLite 里存的字符串。"""
 
@@ -26,6 +34,8 @@ class TaskState(StrEnum):
     VALIDATING = "validating"
     PUSHING = "pushing"
     OPENING_MR = "opening_mr"
+    #: triage / explain 的收尾阶段：把结论落成标签与评论（fix 不使用这个状态）
+    FINALIZING = "finalizing"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
@@ -62,9 +72,71 @@ STAGE_LABELS: dict[TaskState, str] = {
     TaskState.VALIDATING: "校验 diff",
     TaskState.PUSHING: "push 分支",
     TaskState.OPENING_MR: "开 draft MR",
+    TaskState.FINALIZING: "应用结果",
     TaskState.SUCCEEDED: "已完成",
     TaskState.FAILED: "失败",
 }
+
+#: 不同 kind 的阶段名（`STAGE_LABELS` 是 fix 的默认值，保持向后兼容）。
+STAGE_LABELS_BY_KIND: dict[TaskKind, dict[TaskState, str]] = {
+    TaskKind.FIX: STAGE_LABELS,
+    TaskKind.TRIAGE: {
+        TaskState.QUEUED: "入队",
+        TaskState.PREPARING: "准备材料",
+        TaskState.RUNNING: "排查·定位",
+        TaskState.FINALIZING: "打标·评论",
+        TaskState.SUCCEEDED: "已完成",
+        TaskState.FAILED: "失败",
+    },
+    TaskKind.EXPLAIN: {
+        TaskState.QUEUED: "入队",
+        TaskState.PREPARING: "准备上下文",
+        TaskState.RUNNING: "生成解释",
+        TaskState.FINALIZING: "发布评论",
+        TaskState.SUCCEEDED: "已完成",
+        TaskState.FAILED: "失败",
+    },
+}
+
+
+def stage_label(state: TaskState, kind: TaskKind = TaskKind.FIX) -> str:
+    labels = STAGE_LABELS_BY_KIND.get(kind, STAGE_LABELS)
+    return labels.get(state, STAGE_LABELS.get(state, state.value))
+
+
+#: 每种任务只允许自己的流转图。fix 沿用 M1 的完整流水线；triage/explain 是
+#: `queued → preparing → running → finalizing → succeeded|failed` 的粗粒度流程。
+KIND_TRANSITIONS: dict[TaskKind, dict[TaskState, frozenset[TaskState]]] = {
+    TaskKind.FIX: ALLOWED_TRANSITIONS,
+    TaskKind.TRIAGE: {
+        TaskState.QUEUED: frozenset({TaskState.PREPARING, TaskState.FAILED}),
+        TaskState.PREPARING: frozenset({TaskState.RUNNING, TaskState.FAILED}),
+        TaskState.RUNNING: frozenset({TaskState.FINALIZING, TaskState.FAILED}),
+        TaskState.FINALIZING: frozenset({TaskState.SUCCEEDED, TaskState.FAILED}),
+        TaskState.SUCCEEDED: frozenset(),
+        TaskState.FAILED: frozenset(),
+    },
+    TaskKind.EXPLAIN: {
+        TaskState.QUEUED: frozenset({TaskState.PREPARING, TaskState.FAILED}),
+        TaskState.PREPARING: frozenset({TaskState.RUNNING, TaskState.FAILED}),
+        TaskState.RUNNING: frozenset({TaskState.FINALIZING, TaskState.FAILED}),
+        TaskState.FINALIZING: frozenset({TaskState.SUCCEEDED, TaskState.FAILED}),
+        TaskState.SUCCEEDED: frozenset(),
+        TaskState.FAILED: frozenset(),
+    },
+}
+
+
+def can_transition_for(kind: TaskKind, src: TaskState, dst: TaskState) -> bool:
+    """按任务类型判断流转是否合法。"""
+    return dst in KIND_TRANSITIONS.get(kind, ALLOWED_TRANSITIONS).get(src, frozenset())
+
+
+def ensure_transition_for(kind: TaskKind, src: TaskState, dst: TaskState) -> None:
+    from core.errors import InvalidTransition
+
+    if not can_transition_for(kind, src, dst):
+        raise InvalidTransition(src, dst)
 
 
 def is_terminal(state: TaskState) -> bool:

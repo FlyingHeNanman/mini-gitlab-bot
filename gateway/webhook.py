@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from core.labels import SKIP_LABEL
 from core.models import ProjectRef, Trigger, TriggerActor, TriggerKind
 
 #: 投递幂等键候选请求头（按优先级）
@@ -139,6 +140,8 @@ def parse_webhook(
 
 def _parse_issue(payload: Mapping[str, Any], settings, key: str, event_type: str) -> ParsedEvent:
     attrs = payload.get("object_attributes") or {}
+    if attrs.get("action") in ("open", "reopen"):
+        return _parse_issue_opened(attrs, payload, settings, key, event_type)
     if attrs.get("action") != "update":
         return _ignored("not_an_update_action", key, event_type)
 
@@ -175,6 +178,42 @@ def _parse_issue(payload: Mapping[str, Any], settings, key: str, event_type: str
             actor=context["actor"],
             delivery_key=key,
             issue_labels=tuple(sorted(current)),
+            source=str(attrs.get("url") or ""),
+        ),
+    )
+
+
+def _parse_issue_opened(
+    attrs: Mapping[str, Any], payload: Mapping[str, Any], settings, key: str, event_type: str
+) -> ParsedEvent:
+    """新开 / 重开的 issue：自动进入 triage（不再需要人工打标签）。"""
+    state = attrs.get("state")
+    if state is not None and state not in ISSUE_OPEN_STATES:
+        return _ignored(f"issue_state_{state}", key, event_type)
+
+    labels = _label_titles(attrs.get("labels"))
+    if SKIP_LABEL in labels:
+        return _ignored("bot_skipped", key, event_type)
+
+    ignored, context = _common_checks(payload, settings, key, event_type)
+    if ignored is not None:
+        return ignored
+
+    issue_iid = attrs.get("iid")
+    if not isinstance(issue_iid, int):
+        return _ignored("missing_issue_iid", key, event_type)
+
+    return ParsedEvent(
+        reason="issue_opened",
+        delivery_key=key,
+        event_type=event_type,
+        trigger=Trigger(
+            kind=TriggerKind.ISSUE_OPEN,
+            project=context["project"],
+            issue_iid=issue_iid,
+            actor=context["actor"],
+            delivery_key=key,
+            issue_labels=tuple(sorted(labels)),
             source=str(attrs.get("url") or ""),
         ),
     )
