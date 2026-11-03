@@ -11,18 +11,23 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from adapters.proc import CompletedProcess
 from core.labels import TRIGGER_LABEL
 from core.models import (
     AgentResult,
+    CommitInfo,
     DiffSummary,
     EnvReport,
     IssueContext,
+    IssueSummary,
     MergeRequestContext,
     MergeRequestRef,
     ProjectRef,
+    ReleaseInfo,
+    TagInfo,
     Task,
     Workdir,
 )
@@ -68,6 +73,12 @@ class FakeSCM:
         merge_request: MergeRequestContext | None = None,
         project_labels: Sequence[str] = (),
         fail_on: Sequence[str] = (),
+        project_refs: Mapping[str, ProjectRef] | None = None,
+        open_issues: Sequence[IssueSummary] = (),
+        recent_commits: Sequence[CommitInfo] = (),
+        tags: Sequence[TagInfo] = (),
+        commits_between: Mapping[tuple[str, str], Sequence[CommitInfo]] | None = None,
+        existing_releases: Mapping[str, ReleaseInfo] | None = None,
     ) -> None:
         self.default_branch_value = default_branch
         self.current_labels: set[str] = set(labels)
@@ -79,6 +90,12 @@ class FakeSCM:
         self.user_ids = dict(user_ids or {})
         self.merge_request = merge_request
         self.fail_on = set(fail_on)
+        self.project_refs = dict(project_refs or {})
+        self.open_issues = list(open_issues)
+        self.recent_commits = list(recent_commits)
+        self.tags = list(tags)
+        self.commits_between = {key: tuple(value) for key, value in (commits_between or {}).items()}
+        self.releases: dict[str, ReleaseInfo] = dict(existing_releases or {})
 
         # 记录
         self.label_changes: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
@@ -91,6 +108,9 @@ class FakeSCM:
         self.assignments: list[tuple[str, int]] = []
         self.linked_issues: list[tuple[str, int]] = []
         self.closed_issues: set[str] = set()
+        self.closed_issue_iids: list[int] = []
+        self.project_lookups: list[str] = []
+        self.release_creations: list[ReleaseInfo] = []
 
     # ---- 内部 ----
 
@@ -103,6 +123,37 @@ class FakeSCM:
     async def default_branch(self, project: ProjectRef) -> str:
         self._maybe_fail("default_branch")
         return self.default_branch_value
+
+    async def resolve_project(self, path: str) -> ProjectRef | None:
+        self._maybe_fail("resolve_project")
+        self.project_lookups.append(path)
+        return self.project_refs.get(path) or ProjectRef(project_id=42, path=path)
+
+    async def list_open_issues(
+        self, project: ProjectRef, *, limit: int = 100
+    ) -> tuple[IssueSummary, ...]:
+        self._maybe_fail("list_open_issues")
+        return tuple(self.open_issues[:limit])
+
+    async def list_recent_commits(
+        self, project: ProjectRef, *, ref: str, since: datetime, limit: int = 50
+    ) -> tuple[CommitInfo, ...]:
+        self._maybe_fail("list_recent_commits")
+        return tuple(self.recent_commits[:limit])
+
+    async def list_tags(self, project: ProjectRef, *, limit: int = 100) -> tuple[TagInfo, ...]:
+        self._maybe_fail("list_tags")
+        return tuple(self.tags[:limit])
+
+    async def compare_commits(
+        self, project: ProjectRef, *, from_ref: str, to_ref: str, limit: int = 200
+    ) -> tuple[CommitInfo, ...]:
+        self._maybe_fail("compare_commits")
+        return self.commits_between.get((from_ref, to_ref), ())[:limit]
+
+    async def get_release(self, project: ProjectRef, *, tag_name: str) -> ReleaseInfo | None:
+        self._maybe_fail("get_release")
+        return self.releases.get(tag_name)
 
     async def get_member_access_level(self, project_id: int, user_id: int) -> int | None:
         self._maybe_fail("get_member_access_level")
@@ -162,6 +213,21 @@ class FakeSCM:
         self.label_changes.append((tuple(add), tuple(remove)))
         self.current_labels -= set(remove)
         self.current_labels |= set(add)
+        for index, issue in enumerate(self.open_issues):
+            if issue.iid != task.issue_iid:
+                continue
+            labels = set(issue.labels)
+            labels -= set(remove)
+            labels |= set(add)
+            self.open_issues[index] = IssueSummary(
+                iid=issue.iid,
+                title=issue.title,
+                labels=tuple(sorted(labels)),
+                state=issue.state,
+                web_url=issue.web_url,
+                description=issue.description,
+                updated_at=issue.updated_at,
+            )
 
     async def upsert_comment(self, task: Task, body: str, *, marker: str) -> int:
         self._maybe_fail("upsert_comment")
@@ -207,6 +273,24 @@ class FakeSCM:
     async def close_issue(self, task: Task) -> None:
         self._maybe_fail("close_issue")
         self.closed_issues.add(task.id)
+        self.closed_issue_iids.append(task.issue_iid)
+        self.open_issues = [issue for issue in self.open_issues if issue.iid != task.issue_iid]
+
+    async def create_release(
+        self, project: ProjectRef, *, tag_name: str, name: str, description: str
+    ) -> ReleaseInfo:
+        self._maybe_fail("create_release")
+        if tag_name in self.releases:
+            raise RuntimeError(f"Release {tag_name} 已存在（FakeSCM 注入）")
+        release = ReleaseInfo(
+            tag_name=tag_name,
+            name=name,
+            web_url=f"https://gitlab.example.com/{project.path}/-/releases/{tag_name}",
+            description=description,
+        )
+        self.releases[tag_name] = release
+        self.release_creations.append(release)
+        return release
 
 
 @dataclass

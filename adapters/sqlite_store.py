@@ -135,17 +135,23 @@ def _infer_kind(trigger: Trigger) -> TaskKind:
     """没显式指定任务类型时，按触发来源推断。"""
     if trigger.kind is TriggerKind.ISSUE_OPEN:
         return TaskKind.TRIAGE
+    if trigger.kind is TriggerKind.SWEEP:
+        return TaskKind.TRIAGE
     if trigger.kind is TriggerKind.MERGE:
         return TaskKind.EXPLAIN
+    if trigger.kind is TriggerKind.TAG_PUSH:
+        return TaskKind.RELEASE
     if trigger.command == "triage":
         return TaskKind.TRIAGE
     return TaskKind.FIX
 
 
 def _default_subject_key(kind: TaskKind, trigger: Trigger) -> str:
-    """活跃去重键：explain 按 MR + merge sha，fix/triage 按 issue。"""
+    """活跃去重键：explain 按 MR + merge sha，release 按 tag，其余按 issue。"""
     if kind is TaskKind.EXPLAIN:
         return f"mr:{trigger.mr_iid}:{trigger.subject_sha}"
+    if kind is TaskKind.RELEASE:
+        return f"tag:{trigger.tag_name or trigger.subject_sha or ''}"
     return f"issue:{trigger.issue_iid}"
 
 
@@ -245,6 +251,9 @@ class SqliteStore:
             if active is not None:
                 return EnqueueOutcome(False, "active_task_exists", _row_to_task(active))
 
+            payload = dict(payload or {})
+            if trigger.tag_name and "tag_name" not in payload:
+                payload["tag_name"] = trigger.tag_name
             task = Task(
                 id=f"task-{uuid4().hex[:10]}",
                 delivery_key=trigger.delivery_key,
@@ -258,7 +267,7 @@ class SqliteStore:
                 subject_key=subject,
                 parent_task_id=parent_task_id,
                 mr_iid=trigger.mr_iid,
-                payload=dict(payload or {}),
+                payload=payload,
                 max_attempts=max_attempts,
                 created_at=now,
                 updated_at=now,

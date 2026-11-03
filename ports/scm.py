@@ -9,16 +9,57 @@ agent 永远拿不到这个端口 —— 它零凭据（PLAN §7 红线 2）。
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 
-from core.models import IssueContext, MergeRequestContext, MergeRequestRef, ProjectRef, Task
+from core.models import (
+    CommitInfo,
+    IssueContext,
+    IssueSummary,
+    MergeRequestContext,
+    MergeRequestRef,
+    ProjectRef,
+    ReleaseInfo,
+    TagInfo,
+    Task,
+)
 
 
 class SCM(Protocol):
     # ---- 读 ----
 
+    async def resolve_project(self, path: str) -> ProjectRef | None:
+        """按 `path_with_namespace` 解析项目（周期扫描从白名单路径出发）。"""
+        ...
+
     async def default_branch(self, project: ProjectRef) -> str:
         """目标分支：v1 直接取项目的 `default_branch`（PLAN §12 #5，零配置）。"""
+        ...
+
+    async def list_open_issues(
+        self, project: ProjectRef, *, limit: int = 100
+    ) -> tuple[IssueSummary, ...]:
+        """项目里所有 open issue 的摘要（周期扫描 / 补偿巡检用）。"""
+        ...
+
+    async def list_recent_commits(
+        self, project: ProjectRef, *, ref: str, since: datetime, limit: int = 50
+    ) -> tuple[CommitInfo, ...]:
+        """某分支/引用上 `since` 之后的提交（新的在前）。"""
+        ...
+
+    async def list_tags(self, project: ProjectRef, *, limit: int = 100) -> tuple[TagInfo, ...]:
+        """项目 tag 列表（按 tag 指向的提交时间倒序）。"""
+        ...
+
+    async def compare_commits(
+        self, project: ProjectRef, *, from_ref: str, to_ref: str, limit: int = 200
+    ) -> tuple[CommitInfo, ...]:
+        """两个 ref 之间的提交（release notes 输入）。"""
+        ...
+
+    async def get_release(self, project: ProjectRef, *, tag_name: str) -> ReleaseInfo | None:
+        """按 tag 查已有 Release；不存在返回 None（发布幂等用）。"""
         ...
 
     async def get_member_access_level(self, project_id: int, user_id: int) -> int | None:
@@ -78,5 +119,11 @@ class SCM(Protocol):
         ...
 
     async def close_issue(self, task: Task) -> None:
-        """关闭 issue（高置信重复 / 非缺陷结论用）。"""
+        """关闭 issue（高置信重复 / 非缺陷结论 / commit 引用已解决）。"""
+        ...
+
+    async def create_release(
+        self, project: ProjectRef, *, tag_name: str, name: str, description: str
+    ) -> ReleaseInfo:
+        """新建 GitLab Release；tag 已存在 Release 时实现应抛错由调用方兜底。"""
         ...

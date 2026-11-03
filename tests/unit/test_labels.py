@@ -10,7 +10,7 @@ from core import labels
 def test_all_label_names_are_unique() -> None:
     names = [label.name for label in labels.LABELS]
     assert len(names) == len(set(names))
-    assert len(labels.LABELS) == 31
+    assert len(labels.LABELS) == 32
 
 
 def test_label_names_avoid_api_hostile_characters() -> None:
@@ -100,6 +100,7 @@ def test_status_values_are_stable() -> None:
         "状态：自动修复中",
         "状态：待审批",
         "状态：已合并",
+        "状态：已解决",
         "状态：已关闭重复",
         "状态：已关闭非缺陷",
         "状态：处理失败",

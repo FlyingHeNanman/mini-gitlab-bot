@@ -190,3 +190,43 @@ Closes #{{issue_iid}}
 网关另外注入两个字段（agent 不写）：`agent_version`（codex `--version` 输出）、
 `agent_exit_code`。`report.json` 不是判据的一部分 —— 判据永远是
 `exit 0` ∧ `turn.completed` ∧ `-o` 新写入 ∧ diff 非空（PLAN §7 基线 5）。
+
+## 五、commit 引用自动关闭评论（v0.2，`core/sweep.py`）
+
+```markdown
+<!-- mini-gitlab-bot:resolved #12 -->
+## ✅ 已由提交修复
+
+这个 issue 已在默认分支的提交 [`deadbeef`](https://gitlab.example.com/group/project/-/commit/deadbeef…)（2026-11-03）中被引用修复：
+
+> fix(issue-12): 空标签返回 []
+
+机器人已把它标记为 `状态：已解决` 并关闭。
+如果问题仍然存在，直接重新打开这个 issue 即可。
+
+<sub>扫描时间 2026-11-03</sub>
+<sub>机器人原地更新本条评论，请勿手动编辑。</sub>
+```
+
+marker 按 issue 号（不是 task id），重跑只更新同一条。
+
+## 六、自动 Release 说明（v0.2，`core/release.py`）
+
+```markdown
+## v1.2.0 发布说明
+
+对比：[`v1.1.0` → `v1.2.0`](https://gitlab.example.com/group/project/-/compare/v1.1.0...v1.2.0)（4 个提交）
+
+### 新功能
+
+- 支持 Tag Push 自动发布（[`abc12345`](…/commit/abc12345)）
+
+### 修复
+
+- **破坏性变更** 修正返回值（[`def67890`](…/commit/def67890)）
+
+<sub>发布于 2026-11-03 · 由 mini-gitlab-bot 自动生成</sub>
+```
+
+小节固定顺序：新功能 → 修复 → 性能 → 重构 → 文档 → 测试 → 构建 → CI → 杂项 → 代码风格 → 回滚 → 其他变更；
+非 Conventional Commits 提交进「其他变更」，merge 提交过滤。

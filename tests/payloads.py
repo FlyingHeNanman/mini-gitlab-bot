@@ -110,6 +110,32 @@ def merge_payload(
     }
 
 
+def tag_push_payload(
+    *,
+    tag: str = "v1.0.0",
+    ref: str | None = None,
+    before: str = "0" * 40,
+    after: str = "deadbeefcafe1234",
+    user_id: int | None = 7,
+    username: str = "alice",
+    project_id: int = PROJECT_ID,
+    path: str = PROJECT_PATH,
+) -> dict[str, Any]:
+    return {
+        "object_kind": "tag_push",
+        "event_type": "tag_push",
+        "user_id": user_id,
+        "user_name": username,
+        "ref": ref or f"refs/tags/{tag}",
+        "before": before,
+        "after": after,
+        "checkout_sha": after,
+        "project": {"id": project_id, "path_with_namespace": path},
+        "commits": [],
+        "total_commits_count": 0,
+    }
+
+
 def headers(
     *,
     token: str | None = "s3cr3t",

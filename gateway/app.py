@@ -282,6 +282,8 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             trigger = parsed.trigger
             if trigger.kind is TriggerKind.ISSUE_OPEN and not settings.triage_enabled:
                 return JSONResponse({"status": "ignored", "reason": "triage_disabled"})
+            if trigger.kind is TriggerKind.TAG_PUSH and not settings.release_enabled:
+                return JSONResponse({"status": "ignored", "reason": "release_disabled"})
             if trigger.kind is TriggerKind.ISSUE_OPEN and settings.triage_quota_per_hour > 0:
                 since = rt.clock() - timedelta(hours=1)
                 recent = rt.store.count_tasks_since(
@@ -316,13 +318,26 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
                         {"status": "ignored", "reason": f"permission_denied:{decision.reason}"}
                     )
 
-            outcome = rt.store.enqueue(trigger, now=rt.clock(), max_attempts=settings.max_attempts)
+            payload = (
+                {"tag_name": trigger.tag_name} if trigger.kind is TriggerKind.TAG_PUSH else None
+            )
+            outcome = rt.store.enqueue(
+                trigger,
+                now=rt.clock(),
+                max_attempts=settings.max_attempts,
+                payload=payload,
+            )
+            target = (
+                f"tag:{trigger.tag_name}"
+                if trigger.kind is TriggerKind.TAG_PUSH
+                else f"issue=#{trigger.issue_iid}"
+            )
             logger.info(
-                "入队结果 %s：task=%s project=%s issue=#%s actor=%s",
+                "入队结果 %s：task=%s project=%s %s actor=%s",
                 outcome.reason,
                 outcome.task.id if outcome.task else None,
                 trigger.project.path,
-                trigger.issue_iid,
+                target,
                 trigger.actor.username,
             )
             return JSONResponse(

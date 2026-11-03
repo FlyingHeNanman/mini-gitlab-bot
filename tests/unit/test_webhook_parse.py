@@ -7,7 +7,7 @@ import pytest
 from core.labels import SKIP_LABEL, TRIAGE_LABEL, TRIGGER_LABEL
 from core.models import TriggerKind
 from gateway.webhook import delivery_key, parse_command, parse_webhook, verify_token
-from tests.payloads import headers, issue_payload, merge_payload, note_payload
+from tests.payloads import headers, issue_payload, merge_payload, note_payload, tag_push_payload
 
 
 def _parse(payload, *, hdrs=None, settings=None, raw=b"{}"):
@@ -257,3 +257,82 @@ def test_non_merged_mr_is_ignored(settings) -> None:
     )
     assert event.trigger is None
     assert event.reason == "merge_request_not_merged"
+
+
+# --------------------------------------------------------------------------- #
+# Tag Push → Release
+# --------------------------------------------------------------------------- #
+
+
+def test_new_tag_triggers_release(settings) -> None:
+    event = _parse(
+        tag_push_payload(tag="v1.0.0", after="abc123"),
+        hdrs=headers(event="Tag Push Hook"),
+        settings=settings,
+    )
+    assert event.reason == "tag_created"
+    trigger = event.trigger
+    assert trigger is not None
+    assert trigger.kind is TriggerKind.TAG_PUSH
+    assert trigger.tag_name == "v1.0.0"
+    assert trigger.issue_iid == 0
+    assert trigger.subject_sha == "abc123"
+    assert trigger.actor.username == "alice"
+
+
+def test_tag_with_slash_keeps_full_name(settings) -> None:
+    event = _parse(
+        tag_push_payload(tag="release/2026.11"),
+        hdrs=headers(event="Tag Push Hook"),
+        settings=settings,
+    )
+    assert event.trigger is not None
+    assert event.trigger.tag_name == "release/2026.11"
+
+
+def test_branch_push_is_not_a_tag_push(settings) -> None:
+    event = _parse(
+        tag_push_payload(ref="refs/heads/main", tag="main"),
+        hdrs=headers(event="Push Hook"),
+        settings=settings,
+    )
+    assert event.trigger is None
+    assert event.reason == "not_a_tag_push"
+
+
+def test_deleted_tag_is_ignored(settings) -> None:
+    event = _parse(
+        tag_push_payload(before="abc123", after="0" * 40, tag="v1.0.0"),
+        hdrs=headers(event="Tag Push Hook"),
+        settings=settings,
+    )
+    assert event.trigger is None
+    assert event.reason == "tag_deleted"
+
+
+def test_moved_tag_is_ignored(settings) -> None:
+    event = _parse(
+        tag_push_payload(before="abc123", after="def456", tag="v1.0.0"),
+        hdrs=headers(event="Tag Push Hook"),
+        settings=settings,
+    )
+    assert event.trigger is None
+    assert event.reason == "tag_not_created"
+
+
+def test_tag_push_respects_whitelist(settings) -> None:
+    settings.repo_whitelist = ["group/another"]
+    event = _parse(tag_push_payload(), hdrs=headers(event="Tag Push Hook"), settings=settings)
+    assert event.trigger is None
+    assert event.reason == "project_not_whitelisted"
+
+
+def test_tag_push_from_bot_is_ignored(settings) -> None:
+    settings.bot_username = "mini-bot"
+    event = _parse(
+        tag_push_payload(username="mini-bot"),
+        hdrs=headers(event="Tag Push Hook"),
+        settings=settings,
+    )
+    assert event.trigger is None
+    assert event.reason == "self_triggered"

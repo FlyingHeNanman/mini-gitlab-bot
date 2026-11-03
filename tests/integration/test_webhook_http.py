@@ -11,7 +11,13 @@ from core.labels import TRIAGE_LABEL, TRIGGER_LABEL
 from core.models import TriggerKind
 from core.states import TaskKind, TaskState
 from gateway.app import create_app
-from tests.payloads import headers, issue_payload, merge_payload, note_payload
+from tests.payloads import (
+    headers,
+    issue_payload,
+    merge_payload,
+    note_payload,
+    tag_push_payload,
+)
 
 WEBHOOK = "/webhook/gitlab"
 
@@ -334,3 +340,36 @@ async def test_triage_quota_limits_per_project(make_runtime, settings) -> None:
     )
     assert second.json() == {"status": "ignored", "reason": "triage_quota_exceeded"}
     assert runtime.store.count() == 1
+
+
+async def test_tag_push_queues_release(make_runtime, settings) -> None:
+    runtime, _ = make_runtime()
+    app = create_app(settings=settings, runtime=runtime)
+    response = await post(
+        app,
+        tag_push_payload(tag="v1.0.0", after="abc123"),
+        headers(event="Tag Push Hook", delivery="tag-1"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "queued"
+    task = runtime.store.get(body["task_id"])
+    assert task.kind is TaskKind.RELEASE
+    assert task.trigger_kind is TriggerKind.TAG_PUSH
+    assert task.issue_iid == 0
+    assert task.subject_key == "tag:v1.0.0"
+    assert task.payload["tag_name"] == "v1.0.0"
+
+
+async def test_tag_push_ignored_when_release_disabled(make_runtime, settings) -> None:
+    runtime, _ = make_runtime()
+    disabled = settings.model_copy(update={"release_enabled": False})
+    app = create_app(settings=disabled, runtime=runtime)
+    response = await post(
+        app,
+        tag_push_payload(),
+        headers(event="Tag Push Hook", delivery="tag-2"),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored", "reason": "release_disabled"}
+    assert runtime.store.count() == 0

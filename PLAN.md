@@ -430,8 +430,9 @@ pipeline / job / trace，用只读 token 起 `gateway.mcp_readonly` 逐个调用
 | **M3 收尾与状态** | push（凭据不进 argv）、draft MR、单条状态评论原地编辑、标签状态机流转、失败升级 | ✅ 代码完成：319 项测试全绿。`GitLabSCM` 用 python-gitlab 真发 HTTP，打到可编程的本地桩 GitLab（`tests/stub_gitlab.py`）验证请求形状与幂等；**"真 GitLab 实例上一次完整闭环"待内网机器补做**（见 §8.3） |
 | **M4 只读迷你 MCP** | 11 个只读工具（§3.3）、项目绑定、`read_api` token、输出截断 | ✅ 代码完成：374 项测试全绿。真子进程 + 真 stdio 协议 + 真 HTTP 验证了 11 个工具、`get_job_log` 取到失败日志、跨项目参数被拒、写 token 在场即拒绝启动（见 §8.4）；**"真 GitLab + 真 codex 下 agent 主动调用"待内网机器补做** |
 | **M5 运维加固** | pin 版本、镜像重写、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权 | ✅ 代码完成：417 项测试全绿。镜像/编排已重写并做静态校验；`/readyz`、`/metrics`、JSON 日志、Janitor 均有测试与真机烟测（§8.5）。**镜像首次 build 与 `/tasks` 的最终取舍待上线时确认** |
+| **M6 周期扫描与自动 Release（v0.2.0）** | `TriggerKind.SWEEP` / `TAG_PUSH`、补偿巡检（带配额）、`Closes/Fixes/Resolves #N` 回帖+`状态：已解决`+关闭、Tag Push → `TaskKind.RELEASE` → Conventional Commits 分组生成 release notes、Tag/Release SCM 端口、真 HTTP 桩与两条端到端假件 | ✅ 完成：全量 633 项测试全绿、ruff 干净；GitLab 新增端点用本地桩验证请求形状，**真 GitLab Release API 与真机周期扫描待验证** |
 
-**已明确推迟**：Renovate（F-1，不进本仓库）；GitHub 平台适配；非 Python 项目；仓库级配置 `.mini-gitlab-bot.yaml`（§12）；以及 `TODO.md` 里记录的两条需求（issue 自动回复并关闭、按 tag 自动补 release 文案）—— 都属于 v1 之后的功能扩充，不进 M1–M5。
+**已明确推迟**：Renovate（F-1，不进本仓库）；GitHub 平台适配；非 Python 项目；仓库级配置 `.mini-gitlab-bot.yaml`（§12）。`TODO.md` 里的两条需求已在 **v0.2.0（M6）** 落地，不再属于推迟项。
 
 ## 10. 内网环境前提
 

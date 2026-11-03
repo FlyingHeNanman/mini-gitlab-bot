@@ -112,17 +112,62 @@ def _common_checks(
         return _ignored("missing_project_id", key, event_type), {}
 
     actor = payload.get("user") or {}
-    username = str(actor.get("username") or "")
+    username = str(actor.get("username") or payload.get("user_name") or "")
+    raw_id = actor.get("id", payload.get("user_id"))
     if settings.bot_username and username == settings.bot_username:
         return _ignored("self_triggered", key, event_type), {}
 
     return None, {
         "project": ProjectRef(project_id=project_id, path=path),
         "actor": TriggerActor(
-            user_id=actor.get("id") if isinstance(actor.get("id"), int) else None,
+            user_id=raw_id if isinstance(raw_id, int) else None,
             username=username,
         ),
     }
+
+
+def _all_zero(sha: str) -> bool:
+    return bool(sha) and set(sha) <= {"0"}
+
+
+def _parse_tag_push(payload: Mapping[str, Any], settings, key: str, event_type: str) -> ParsedEvent:
+    """Tag Push Hook：新建 tag → release 任务；分支 push / 删除 / 移动 tag 一律忽略。"""
+    ref = str(payload.get("ref") or "")
+    if not ref.startswith("refs/tags/"):
+        return _ignored("not_a_tag_push", key, event_type)
+    tag_name = ref.removeprefix("refs/tags/").strip()
+    if not tag_name:
+        return _ignored("missing_tag_name", key, event_type)
+
+    before = str(payload.get("before") or "")
+    after = str(payload.get("after") or "")
+    if not after:
+        return _ignored("missing_tag_sha", key, event_type)
+    if _all_zero(after):
+        return _ignored("tag_deleted", key, event_type)
+    if before and not _all_zero(before):
+        # 已存在的 tag 被移动/重推：不覆盖已有 Release（人工改过的说明优先）
+        return _ignored("tag_not_created", key, event_type)
+
+    ignored, context = _common_checks(payload, settings, key, event_type)
+    if ignored is not None:
+        return ignored
+
+    return ParsedEvent(
+        reason="tag_created",
+        delivery_key=key,
+        event_type=event_type,
+        trigger=Trigger(
+            kind=TriggerKind.TAG_PUSH,
+            project=context["project"],
+            issue_iid=0,
+            actor=context["actor"],
+            delivery_key=key,
+            tag_name=tag_name,
+            subject_sha=after,
+            source=ref,
+        ),
+    )
 
 
 def parse_webhook(
@@ -138,6 +183,8 @@ def parse_webhook(
         return _parse_note(payload, settings, key, event_type)
     if object_kind == "merge_request":
         return _parse_merge_request(payload, settings, key, event_type)
+    if object_kind == "tag_push":
+        return _parse_tag_push(payload, settings, key, event_type)
     return _ignored("unsupported_event", key, event_type)
 
 

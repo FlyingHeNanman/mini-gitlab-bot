@@ -53,6 +53,8 @@ STATUS_NEEDS_HUMAN = f"{STATUS_GROUP}{SEPARATOR}待人工处理"
 STATUS_FIXING = f"{STATUS_GROUP}{SEPARATOR}自动修复中"
 STATUS_REVIEW = f"{STATUS_GROUP}{SEPARATOR}待审批"
 STATUS_MERGED = f"{STATUS_GROUP}{SEPARATOR}已合并"
+#: commit 引用修复后由周期扫描自动关闭（TODO #1）
+STATUS_RESOLVED = f"{STATUS_GROUP}{SEPARATOR}已解决"
 STATUS_DUPLICATE = f"{STATUS_GROUP}{SEPARATOR}已关闭重复"
 STATUS_NOT_A_BUG = f"{STATUS_GROUP}{SEPARATOR}已关闭非缺陷"
 STATUS_FAILED = f"{STATUS_GROUP}{SEPARATOR}处理失败"
@@ -85,7 +87,7 @@ class LabelDef:
     group: str | None = None
 
 
-#: 31 个固定标签（组件值是动态的，不列在这里；兜底值见 `COMPONENT_FALLBACK`）。
+#: 32 个固定标签（组件值是动态的，不列在这里；兜底值见 `COMPONENT_FALLBACK`）。
 LABELS: tuple[LabelDef, ...] = (
     # ---- 机器人指令（多值，人工写入） ----
     LabelDef(TRIGGER_LABEL, "#1F6FEB", "人工指令：立即触发修复任务；任务开始后由机器人移除"),
@@ -123,6 +125,7 @@ LABELS: tuple[LabelDef, ...] = (
     LabelDef(STATUS_FIXING, "#F9D0C4", "修复任务运行中", group="状态"),
     LabelDef(STATUS_REVIEW, "#BFD4F2", "draft MR 已开，等待人工审批合并", group="状态"),
     LabelDef(STATUS_MERGED, "#0E8A16", "MR 已合并，解释评论已发布", group="状态"),
+    LabelDef(STATUS_RESOLVED, "#1A7F37", "提交已引用修复；机器人已回帖并关闭", group="状态"),
     LabelDef(STATUS_DUPLICATE, "#CFD3D7", "高置信重复，已关联并关闭", group="状态"),
     LabelDef(STATUS_NOT_A_BUG, "#CFD3D7", "判定不成立 / 已实现 / 长期无法复现", group="状态"),
     LabelDef(STATUS_FAILED, "#D93F0B", "机器人自身失败（环境、模型或 GitLab 调用）", group="状态"),

@@ -1,6 +1,6 @@
 # 自动巡检（auto-triage）设计
 
-> 状态：草案 v0.2（2026-11-02）
+> 状态：v0.3（2026-11-03；周期扫描与自动 Release 已落地）
 > 已定案：标签体系（全中文）、模型分档、小改动自动修默认开、**验证降级为「解释响应」**、三条评论、新 issue 全量 triage、旧标签硬切
 > 待评审：§14 开放问题
 > 相关文档：[PLAN.md](../../PLAN.md)（现有架构）、[templates.md](../templates.md)（文案风格）
@@ -61,7 +61,9 @@ marker 用 issue 号而不是 task id —— 重跑 triage 是「更新同一条
 | Issue Hook 标签新增 `机器人：修复` | 同上 + 触发者 ≥ Developer（沿用现有闸门） | fix（直接修，跳过 triage） |
 | Issue Hook 标签新增 `机器人：巡检` | 同上 | triage（重跑） |
 | MR Hook `action=merge` | `target_branch == 默认分支`，且能关联到 issue | explain |
-| 补偿扫描（可选，后置） | 每 N 小时扫「open 且无 `状态：` 标签」的 issue | triage（带配额） |
+| 周期扫描（已落地） | 每 `SWEEP_INTERVAL_SEC` 扫白名单项目「open 且无 `状态：` 标签」的 issue | triage（带每小时配额） |
+| 周期扫描（已落地） | 默认分支最近 `SWEEP_COMMIT_LOOKBACK_DAYS` 天提交含 `Closes/Fixes/Resolves #N` | 回帖 + `状态：已解决` + 关闭 |
+| Tag Push Hook（已落地） | `refs/tags/`、新建 tag（`before` 全 0）、项目白名单、非 bot | release |
 
 **不做的事**：不监听 issue `update`（否则改个描述就触发全仓分析）；重跑一律走显式指令。
 
@@ -78,6 +80,7 @@ marker 用 issue 号而不是 task id —— 重跑 triage 是「更新同一条
 | `triage` | 排查·定位 | `queued → running → finalizing → done \| failed` | 是（uv sync） |
 | `fix` | 修复（沿用现有实现） | 现有 8 态，**本期不改** | 是 |
 | `explain` | 合并后解释方案 | `queued → running → finalizing → done \| failed` | 否（只读 diff，一次调用） |
+| `release` | Tag Push 后补 Release | `queued → preparing → running → finalizing → done \| failed` | 否（只读提交，确定性渲染） |
 
 fix 不迁移的理由：它是唯一在真机跑通的闭环（41 秒、真 MR），重写收益只是概念统一，风险是 400+ 测试护着的代码。
 
@@ -326,6 +329,7 @@ AUTOFIX_ENABLED=true（默认开）且全部满足：
 | `状态：自动修复中` | fix 运行中 | `#F9D0C4` |
 | `状态：待审批` | draft MR 已开，等人工审批 | `#BFD4F2` |
 | `状态：已合并` | MR 已合并，解释评论已发布 | `#0E8A16` |
+| `状态：已解决` | commit 引用已修复；机器人已回帖并关闭 | `#1A7F37` |
 | `状态：已关闭重复` | 高置信重复，已关联并关闭 | `#CFD3D7` |
 | `状态：已关闭非缺陷` | 不成立 / 已实现 / 长期无法复现 | `#CFD3D7` |
 | `状态：处理失败` | 机器人自身失败（环境/模型/GitLab 调用） | `#D93F0B` |
@@ -348,7 +352,7 @@ AUTOFIX_ENABLED=true（默认开）且全部满足：
 | `风险：涉及依赖` | 需新增依赖（沙箱无网装不了） | `#FEF2C0` |
 | `风险：需人工决策` | 方案有取舍，需人拍板 | `#D93F0B` |
 
-共 **31 个固定标签** + 动态组件值。
+共 **32 个固定标签** + 动态组件值。
 
 ### 9.9 标签演化示例
 
@@ -506,7 +510,7 @@ def group_of(name: str) -> str | None:
 
 | 里程碑 | 内容 | 判据 |
 | --- | --- | --- |
-| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 582 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
+| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 633 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
 | **M7 自动修 + 指派** | 裁决、内部 enqueue、组件映射（CODEOWNERS / 顶层目录） | 自动修真机验证（draft MR）；CODEOWNERS 指派、重复关闭已落地（假件） |
 | **M8 解释响应** | merge 事件、diff 读取、解释评论、标签流转 | 假件全链路 + 真 GitLab MR merge/真 codex 解释通过（含分阶段模型、配额） |
 | **M9（可选）** | 真验证（复跑 repro / 回归测试）＋ fix 迁到 Runner | 446 项测试等价迁移；真实验证一次通过、一次失败 |
@@ -523,3 +527,37 @@ def group_of(name: str) -> str | None:
 2. **配额超限后的行为（已落地为直接忽略）**：如果要「下一窗口补跑」，需要给任务加 `not_before` 延后领取；否则重开/手动巡检。
 3. **explain 的输入上限**：大 MR（几百文件）的 diff 摘要要不要截断到 N 文件 / N 行？建议默认 50 文件 / 2000 行，超出时在评论里注明「仅解释了主要改动」。
 4. **组件映射缺失**：完全无 CODEOWNERS、且改动跨多个顶层目录时，是 `组件：其他`（本稿）还是取「改动最多的顶层目录」？后者更有信息量但会误标。
+
+## 15. 周期扫描与自动 Release（v0.2 已落地）
+
+这两条能力都**不经过模型**，是确定性的补偿链路；它们复用 SQLite 队列、状态机、标签与评论能力，不新增进程。
+
+### 15.1 周期扫描（`core/sweep.py`）
+
+每个 `SWEEP_INTERVAL_SEC`（默认 1800s）对每个白名单项目执行两件事：
+
+1. **补偿巡检**：`list_open_issues` 取 open issue，跳过 `机器人：跳过`、正文过短、已有任一 `状态：` 标签的；按项目每小时 `TRIAGE_QUOTA_PER_HOUR` 限流，补建 `TriggerKind.SWEEP` 的 triage 任务。delivery key 带秒级时间戳，同一秒重跑不会重复入队。
+2. **commit 引用回收**：读取默认分支最近 `SWEEP_COMMIT_LOOKBACK_DAYS` 天提交，用 `Closes/Fixes/Resolves #N`（支持 `#1, #2` / `#1 and #2`，大小写不敏感）解析引用；对仍 open 的 issue 按「新提交优先」取最新引用：
+   - 打 `状态：已解决`（移除其他状态标签）；
+   - upsert 一条带 `<!-- mini-gitlab-bot:resolved #N -->` marker 的评论，写明提交短 sha、标题、日期；
+   - 调 `close_issue`。
+   - 不检查 `状态：` 标签，保证「上次评论成功但关闭失败」可以重试；关闭成功的 issue 不再出现在 open 列表，天然幂等。
+
+失败按项目隔离：单个项目读取/写失败只记 `errors` 与日志，不拖垮整轮；`SweepReport` 记录补建数、回收数、配额跳过与错误。
+
+### 15.2 自动 Release（`core/release.py` + `core/release_orchestrator.py`）
+
+1. **触发**：Tag Push Hook 仅接受 `refs/tags/` 且 `before` 全 0（新建）；删 tag、移动/重推 tag、分支 push 一律忽略，避免覆盖人工修改的 Release 说明。
+2. **取范围**：`list_tags` 按时间倒序，找当前 tag 的相邻上一个 tag；有上一个则 `compare_commits`，没有则 `list_recent_commits(ref=tag)` 回退 `RELEASE_LOOKBACK_DAYS`。
+3. **渲染**：按 Conventional Commits 分组（feat/fix/perf/refactor/docs/test/build/ci/chore/style/revert/other），去掉冗余前缀，附短 sha 链接、compare 链接、`**破坏性变更**` 标记；merge 提交过滤掉。
+4. **发布**：先 `get_release`，已存在则记事件并成功返回（不覆盖人工说明）；否则 `create_release`。失败只进任务表与日志，不在 issue 上评论（release 任务没有 issue 目标）。
+
+### 15.3 配置
+
+`SWEEP_*`、`RELEASE_*` 见 `.env.example`；两者都默认开启。周期扫描挂在 `Worker.run_forever` 的维护循环，和 janitor 一起启动；测试中只显式调用 `run_once()`，不会起后台循环。
+
+### 15.4 测试覆盖
+
+- 纯函数：关闭关键字解析（含组合写法）、评论 marker、Conventional 分类、小节渲染、相邻 tag 查找。
+- 端到端假件：sweep → triage worker → 标签/评论；tag push → HTTP 入队 → release worker → GitLab Release。
+- 真 HTTP 桩：GitLab 新增 `resolve_project` / `list_open_issues` / `list_recent_commits` / `list_tags` / `compare_commits` / `get_release` / `create_release` 的请求形状与幂等分支。

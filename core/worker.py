@@ -40,6 +40,7 @@ class Worker:
         clock: Callable[[], datetime] = _utcnow,
         on_task_failed: Callable[[Task], Awaitable[None]] | None = None,
         janitor=None,
+        sweeper=None,
         metrics=None,
         kinds: Sequence[TaskKind] | None = None,
     ) -> None:
@@ -56,6 +57,7 @@ class Worker:
         self._clock = clock
         self._on_task_failed = on_task_failed
         self._janitor = janitor
+        self._sweeper = sweeper
         self._metrics = metrics
         self._inflight: dict[str, asyncio.Task[None]] = {}
 
@@ -134,6 +136,8 @@ class Worker:
         ]
         if self._janitor is not None:
             maint.append(asyncio.create_task(self._janitor.run_forever(), name="janitor"))
+        if self._sweeper is not None:
+            maint.append(asyncio.create_task(self._sweeper.run_forever(), name="sweeper"))
         try:
             while True:
                 self._fill()

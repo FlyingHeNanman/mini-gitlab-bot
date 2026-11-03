@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import gitlab
@@ -36,10 +38,14 @@ from gitlab.exceptions import (
 
 from adapters.proc import Scrubber
 from core.models import (
+    CommitInfo,
     IssueContext,
+    IssueSummary,
     MergeRequestContext,
     MergeRequestRef,
     ProjectRef,
+    ReleaseInfo,
+    TagInfo,
     Task,
 )
 
@@ -47,6 +53,50 @@ logger = logging.getLogger(__name__)
 
 #: 扫描已有 note 找状态评论时的硬上限（防止超长 issue 把一次调用拖成几十页请求）
 NOTE_SCAN_LIMIT = 500
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _field(obj: Any, name: str, default: Any = None) -> Any:
+    """兼容 python-gitlab 的 RESTObject 与 compare API 返回的裸 dict。"""
+    if isinstance(obj, Mapping):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _commit_info(commit: Any) -> CommitInfo:
+    title = str(_field(commit, "title") or "")
+    message = str(_field(commit, "message") or title)
+    return CommitInfo(
+        sha=str(_field(commit, "id") or _field(commit, "sha") or ""),
+        title=title,
+        message=message,
+        web_url=str(_field(commit, "web_url") or ""),
+        created_at=_parse_dt(_field(commit, "created_at")),
+    )
+
+
+def _tag_info(tag: Any) -> TagInfo:
+    commit = getattr(tag, "commit", None) or {}
+    if isinstance(commit, dict):
+        sha = str(commit.get("id") or commit.get("short_id") or "")
+        committed_at = _parse_dt(commit.get("created_at"))
+    else:
+        sha = str(getattr(commit, "id", "") or "")
+        committed_at = _parse_dt(getattr(commit, "created_at", None))
+    return TagInfo(
+        name=str(getattr(tag, "name", "") or ""),
+        commit_sha=sha,
+        web_url=str(getattr(tag, "web_url", "") or ""),
+        committed_at=committed_at,
+    )
 
 
 class ScmError(RuntimeError):
@@ -94,6 +144,61 @@ class GitLabSCM:
         proj = await self._run("读取项目信息", self._get_project, project.project_id)
         branch = getattr(proj, "default_branch", None) or "main"
         return str(branch)
+
+    async def resolve_project(self, path: str) -> ProjectRef | None:
+        try:
+            proj = await self._run("解析项目", self._resolve_project, path)
+        except ScmError as exc:
+            if exc.not_found:
+                return None
+            raise
+        project_id = getattr(proj, "id", None)
+        if project_id is None:
+            return None
+        return ProjectRef(
+            project_id=int(project_id),
+            path=str(getattr(proj, "path_with_namespace", "") or path),
+        )
+
+    async def list_open_issues(
+        self, project: ProjectRef, *, limit: int = 100
+    ) -> tuple[IssueSummary, ...]:
+        return await self._run(
+            "读取 open issues", self._list_open_issues, project.project_id, limit
+        )
+
+    async def list_recent_commits(
+        self, project: ProjectRef, *, ref: str, since: datetime, limit: int = 50
+    ) -> tuple[CommitInfo, ...]:
+        return await self._run(
+            "读取提交",
+            self._list_recent_commits,
+            project.project_id,
+            ref,
+            since,
+            limit,
+        )
+
+    async def list_tags(self, project: ProjectRef, *, limit: int = 100) -> tuple[TagInfo, ...]:
+        return await self._run("读取 tag", self._list_tags, project.project_id, limit)
+
+    async def compare_commits(
+        self, project: ProjectRef, *, from_ref: str, to_ref: str, limit: int = 200
+    ) -> tuple[CommitInfo, ...]:
+        return await self._run(
+            "比较引用", self._compare_commits, project.project_id, from_ref, to_ref, limit
+        )
+
+    async def get_release(self, project: ProjectRef, *, tag_name: str) -> ReleaseInfo | None:
+        try:
+            release = await self._run(
+                "读取 Release", self._get_release, project.project_id, tag_name
+            )
+        except ScmError as exc:
+            if exc.not_found:
+                return None
+            raise
+        return self._release_info(release, tag_name)
 
     async def get_member_access_level(self, project_id: int, user_id: int) -> int | None:
         try:
@@ -170,9 +275,105 @@ class GitLabSCM:
     async def close_issue(self, task: Task) -> None:
         await self._run("关闭 issue", self._close_issue, task)
 
+    async def create_release(
+        self, project: ProjectRef, *, tag_name: str, name: str, description: str
+    ) -> ReleaseInfo:
+        release = await self._run(
+            "创建 Release", self._create_release, project.project_id, tag_name, name, description
+        )
+        return self._release_info(release, tag_name)
+
     # ------------------------------------------------------------------ #
     # 同步实现（全部在 to_thread 里跑）
     # ------------------------------------------------------------------ #
+
+    def _resolve_project(self, path: str) -> Any:
+        # GitLab 接受 URL 编码后的 path_with_namespace（python-gitlab 会自动编码 /）
+        return self.client.projects.get(path)
+
+    def _list_open_issues(self, project_id: int, limit: int) -> tuple[IssueSummary, ...]:
+        project = self._get_project(project_id)
+        issues = project.issues.list(
+            state="opened",
+            per_page=limit,
+            order_by="created_at",
+            sort="asc",
+            iterator=False,
+        )
+        return tuple(
+            IssueSummary(
+                iid=int(getattr(issue, "iid", 0)),
+                title=str(getattr(issue, "title", "") or ""),
+                labels=tuple(getattr(issue, "labels", None) or ()),
+                state=str(getattr(issue, "state", "opened") or "opened"),
+                web_url=str(getattr(issue, "web_url", "") or ""),
+                description=str(getattr(issue, "description", "") or ""),
+                updated_at=_parse_dt(getattr(issue, "updated_at", None)),
+            )
+            for issue in issues
+        )
+
+    def _list_recent_commits(
+        self, project_id: int, ref: str, since: datetime, limit: int
+    ) -> tuple[CommitInfo, ...]:
+        project = self._get_project(project_id)
+        commits = project.commits.list(
+            ref_name=ref,
+            since=since.astimezone(UTC).isoformat(),
+            per_page=limit,
+            iterator=False,
+        )
+        return tuple(_commit_info(commit) for commit in commits)
+
+    def _list_tags(self, project_id: int, limit: int) -> tuple[TagInfo, ...]:
+        project = self._get_project(project_id)
+        tags = project.tags.list(per_page=limit, iterator=False)
+        infos = [_tag_info(tag) for tag in tags]
+        # GitLab tags API 的排序对自管实例不一定稳定，按 tag 指向的提交时间在本地排
+        infos.sort(
+            key=lambda item: item.committed_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return tuple(infos)
+
+    def _compare_commits(
+        self, project_id: int, from_ref: str, to_ref: str, limit: int
+    ) -> tuple[CommitInfo, ...]:
+        project = self._get_project(project_id)
+        data = project.repository_compare(from_ref, to_ref) or {}
+        commits = data.get("commits") if isinstance(data, dict) else None
+        return tuple(_commit_info(item) for item in (commits or [])[:limit])
+
+    def _get_release(self, project_id: int, tag_name: str) -> Any:
+        return self._get_project(project_id).releases.get(tag_name)
+
+    def _create_release(self, project_id: int, tag_name: str, name: str, description: str) -> Any:
+        project = self._get_project(project_id)
+        try:
+            return project.releases.create(
+                {"tag_name": tag_name, "name": name, "description": description}
+            )
+        except GitlabCreateError as exc:
+            message = str(getattr(exc, "error_message", "") or exc).lower()
+            code = getattr(exc, "response_code", 0)
+            # 并发 / webhook 重投：已经存在就回读（发布是幂等的）
+            if "already exists" in message or code in (400, 409):
+                try:
+                    return project.releases.get(tag_name)
+                except GitlabGetError:
+                    raise exc from None
+            raise
+
+    @staticmethod
+    def _release_info(release: Any, fallback_tag: str) -> ReleaseInfo:
+        links = getattr(release, "_links", None) or {}
+        self_url = links.get("self") if isinstance(links, dict) else ""
+        return ReleaseInfo(
+            tag_name=str(getattr(release, "tag_name", "") or fallback_tag),
+            name=str(getattr(release, "name", "") or fallback_tag),
+            web_url=str(getattr(release, "web_url", "") or self_url or ""),
+            description=str(getattr(release, "description", "") or ""),
+        )
 
     def _find_user_id(self, username: str) -> int | None:
         users = self.client.users.list(username=username, per_page=10)

@@ -16,12 +16,16 @@ from core.states import TaskKind, TaskState, is_terminal
 
 
 class TriggerKind(StrEnum):
-    """触发来源：标签状态机、评论命令、或新 issue 自动巡检。"""
+    """触发来源：标签状态机、评论命令、新 issue 自动巡检、补偿扫描、Tag Push。"""
 
     LABEL = "label"
     COMMENT = "comment"
     ISSUE_OPEN = "issue_open"
     MERGE = "merge"
+    #: 周期扫描派生的 triage（webhook 漏事件时的兜底；不由 HTTP 层直接创建）
+    SWEEP = "sweep"
+    #: 用户推送 tag（自动补 GitLab Release）
+    TAG_PUSH = "tag_push"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +55,8 @@ class Trigger:
     #: explain 任务用：合并请求 iid 与合并提交 sha（幂等键 `mr:<iid>:<sha>`）
     mr_iid: int | None = None
     subject_sha: str | None = None
+    #: release 任务用：tag 名（如 `v1.2.3`；幂等键 `tag:<name>`）
+    tag_name: str | None = None
 
 
 @dataclass(slots=True)
@@ -159,6 +165,51 @@ class IssueContext:
     labels: tuple[str, ...] = ()
     state: str = "opened"
     comments: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class IssueSummary:
+    """周期扫描用的 issue 摘要（只读，不含评论正文）。"""
+
+    iid: int
+    title: str
+    labels: tuple[str, ...] = ()
+    state: str = "opened"
+    web_url: str = ""
+    description: str = ""
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CommitInfo:
+    """一次提交的元信息（commit 引用检测 / release notes 用）。"""
+
+    sha: str
+    title: str
+    message: str
+    web_url: str = ""
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TagInfo:
+    """项目 tag（release 任务用）。"""
+
+    name: str
+    commit_sha: str
+    web_url: str = ""
+    #: tag 指向的提交时间（按它倒序找「上一个 tag」）
+    committed_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseInfo:
+    """GitLab Release（发布成功后回读到的实际状态）。"""
+
+    tag_name: str
+    name: str
+    web_url: str = ""
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +344,16 @@ class TaskEvent:
     at: datetime
     kind: str
     detail: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SweepReport:
+    """一轮周期扫描的结果（只用于日志/指标/测试断言）。"""
+
+    triaged: tuple[int, ...] = ()
+    resolved: tuple[tuple[int, str], ...] = ()
+    quota_skipped: int = 0
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

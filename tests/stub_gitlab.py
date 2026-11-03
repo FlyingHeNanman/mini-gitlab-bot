@@ -14,9 +14,10 @@ import json
 import re
 import threading
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 DEFAULT_TOKEN = "glpat-stub-token-0123456789"
 
@@ -45,6 +46,10 @@ class StubState:
     #: pipeline id -> test_report
     test_reports: dict[int, dict[str, Any]] = field(default_factory=dict)
     commits: list[dict[str, Any]] = field(default_factory=list)
+    #: tag 名 -> tag 对象（含 commit）
+    tags: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: tag 名 -> release 对象
+    releases: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: sha -> diff 列表
     commit_diffs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     languages: dict[str, float] = field(default_factory=dict)
@@ -188,6 +193,31 @@ class StubState:
         self.commit_diffs[sha] = list(diffs or [])
         return sha
 
+    def add_tag(
+        self,
+        name: str,
+        sha: str,
+        *,
+        created_at: str = "2026-10-17T09:00:00.000Z",
+    ) -> str:
+        self.tags[name] = {
+            "name": name,
+            "web_url": f"https://gitlab.example.com/{self.project.path}/-/tags/{name}",
+            "commit": {"id": sha, "created_at": created_at},
+        }
+        return name
+
+    def add_release(self, tag_name: str, *, name: str | None = None, description: str = "") -> None:
+        self.releases[tag_name] = {
+            "tag_name": tag_name,
+            "name": name or tag_name,
+            "description": description,
+            "_links": {
+                "self": f"https://gitlab.example.com/api/v4/projects/"
+                f"{self.project.project_id}/releases/{tag_name}"
+            },
+        }
+
     def find_note(self, iid: int, note_id: int) -> dict[str, Any] | None:
         return next((note for note in self.notes.get(iid, []) if note["id"] == note_id), None)
 
@@ -294,8 +324,11 @@ class _Handler(BaseHTTPRequestHandler):
 
         route = path[len(_API) :]
         pid = re.escape(str(self.state.project.project_id))
+        project_path_route = f"/projects/{quote(self.state.project.path, safe='')}"
 
-        if method == "GET" and re.fullmatch(rf"/projects/{pid}", route):
+        if method == "GET" and (
+            re.fullmatch(rf"/projects/{pid}", route) or route == project_path_route
+        ):
             project = self.state.project
             self._send(
                 200,
@@ -540,8 +573,76 @@ class _Handler(BaseHTTPRequestHandler):
                 ref = query["ref_name"][0]
                 if ref in {item["id"] for item in items} | {item["short_id"] for item in items}:
                     items = [item for item in items if item["id"] == ref or item["short_id"] == ref]
+            if "since" in query:
+                since = _parse_iso(query["since"][0])
+                if since is not None:
+                    items = [
+                        item for item in items if (_parse_iso(item["created_at"]) or since) >= since
+                    ]
             limit = int(query.get("per_page", ["20"])[0])
             self._send(200, items[:limit])
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/repository/tags", route)
+        if match and method == "GET":
+            items = list(self.state.tags.values())
+            limit = int(query.get("per_page", ["20"])[0])
+            self._send(200, items[:limit])
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/repository/compare", route)
+        if match and method == "GET":
+            from_ref = query.get("from", [""])[0]
+            to_ref = query.get("to", [""])[0]
+            from_sha = self.state.tags.get(from_ref, {}).get("commit", {}).get("id", from_ref)
+            to_sha = self.state.tags.get(to_ref, {}).get("commit", {}).get("id", to_ref)
+            ids = [item["id"] for item in self.state.commits]
+            start = ids.index(from_sha) if from_sha in ids else 0
+            end = ids.index(to_sha) + 1 if to_sha in ids else len(ids)
+            self._send(
+                200,
+                {
+                    "commits": list(self.state.commits[start:end]),
+                    "diffs": [],
+                    "compare_same_ref": from_sha == to_sha,
+                    "compare_timeout": False,
+                },
+            )
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/releases", route)
+        if match and method == "GET":
+            self._send(200, list(self.state.releases.values()))
+            return
+        if match and method == "POST":
+            tag_name = str(body.get("tag_name") or "")
+            if tag_name in self.state.releases:
+                self._send(409, {"message": "Release already exists"})
+                return
+            if tag_name not in self.state.tags:
+                self._send(404, {"message": "404 Tag Not found"})
+                return
+            release = {
+                "tag_name": tag_name,
+                "name": str(body.get("name") or tag_name),
+                "description": str(body.get("description") or ""),
+                "_links": {
+                    "self": f"https://gitlab.example.com/api/v4/projects/"
+                    f"{self.state.project.project_id}/releases/{tag_name}"
+                },
+            }
+            self.state.releases[tag_name] = release
+            self._send(201, release)
+            return
+
+        match = re.fullmatch(rf"/projects/{pid}/releases/([^/]+)", route)
+        if match and method == "GET":
+            tag_name = match.group(1)
+            release = self.state.releases.get(tag_name)
+            if release is None:
+                self._send(404, {"message": "404 Release Not found"})
+                return
+            self._send(200, release)
             return
 
         match = re.fullmatch(rf"/projects/{pid}/repository/commits/([0-9a-f]{{6,40}})/diff", route)
@@ -596,6 +697,13 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         self._send(404, {"message": f"404 Not found: {method} {route}"})
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def _page(

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from adapters.gitlab_client import GitLabSCM, GitLabSettings, ScmError
@@ -320,3 +322,86 @@ async def test_token_travels_only_in_the_header(stub: StubGitLab, scm: GitLabSCM
         assert item["headers"]["private-token"] == DEFAULT_TOKEN  # 只在这里
         assert "oauth2:" not in item["path"]
         assert "glpat-" not in item["path"]
+
+
+# --------------------------------------------------------------------------- #
+# 周期扫描 / Release 新增的端点（TODO #1 / TODO #2）
+# --------------------------------------------------------------------------- #
+
+
+async def test_resolve_project_by_path(stub: StubGitLab, scm: GitLabSCM) -> None:
+    project = await scm.resolve_project("group/project-a")
+    assert project == ProjectRef(project_id=PROJECT_ID, path="group/project-a")
+    # path_with_namespace 里的 / 必须编码，否则会被当成两个路径段
+    assert any("group%2Fproject-a" in item["path"] for item in stub.state.requests)
+
+
+async def test_list_open_issues_asks_for_opened_only(stub: StubGitLab, scm: GitLabSCM) -> None:
+    stub.state.add_issue(20, title="关闭的不算", state="closed")
+    issues = await scm.list_open_issues(
+        ProjectRef(project_id=PROJECT_ID, path="group/project-a"), limit=50
+    )
+    assert [item.iid for item in issues] == [ISSUE]
+    request = next(item for item in stub.state.requests if "/issues?" in item["path"])
+    assert request["query"]["state"] == ["opened"]
+    assert request["query"]["per_page"] == ["50"]
+
+
+async def test_list_recent_commits_passes_since_and_ref(stub: StubGitLab, scm: GitLabSCM) -> None:
+    stub.state.add_commit("aaa111", title="feat: x", created_at="2026-10-20T00:00:00.000Z")
+    stub.state.add_commit("bbb222", title="old", created_at="2026-10-01T00:00:00.000Z")
+    commits = await scm.list_recent_commits(
+        ProjectRef(project_id=PROJECT_ID, path="group/project-a"),
+        ref="main",
+        since=datetime(2026, 10, 10, tzinfo=UTC),
+        limit=10,
+    )
+    assert [item.sha for item in commits] == ["aaa111"]
+    request = next(item for item in stub.state.requests if "/repository/commits?" in item["path"])
+    assert request["query"]["ref_name"] == ["main"]
+    assert request["query"]["since"][0].startswith("2026-10-10")
+
+
+async def test_list_tags_sorts_by_commit_time(stub: StubGitLab, scm: GitLabSCM) -> None:
+    stub.state.add_tag("v1.0.0", "aaa111", created_at="2026-10-01T00:00:00.000Z")
+    stub.state.add_tag("v1.1.0", "bbb222", created_at="2026-10-20T00:00:00.000Z")
+    tags = await scm.list_tags(ProjectRef(project_id=PROJECT_ID, path="group/project-a"))
+    assert [item.name for item in tags] == ["v1.1.0", "v1.0.0"]
+
+
+async def test_compare_commits_returns_commits_between_refs(
+    stub: StubGitLab, scm: GitLabSCM
+) -> None:
+    stub.state.add_commit("aaa111", title="a", created_at="2026-10-01T00:00:00.000Z")
+    stub.state.add_commit("bbb222", title="b", created_at="2026-10-02T00:00:00.000Z")
+    stub.state.add_commit("ccc333", title="c", created_at="2026-10-03T00:00:00.000Z")
+    stub.state.add_tag("v1.0.0", "aaa111")
+    stub.state.add_tag("v1.1.0", "ccc333")
+    commits = await scm.compare_commits(
+        ProjectRef(project_id=PROJECT_ID, path="group/project-a"),
+        from_ref="v1.0.0",
+        to_ref="v1.1.0",
+    )
+    assert [item.sha for item in commits] == ["aaa111", "bbb222", "ccc333"]
+
+
+async def test_release_get_and_create(stub: StubGitLab, scm: GitLabSCM) -> None:
+    project = ProjectRef(project_id=PROJECT_ID, path="group/project-a")
+    assert await scm.get_release(project, tag_name="v1.0.0") is None
+    stub.state.add_tag("v1.0.0", "aaa111")
+    release = await scm.create_release(
+        project, tag_name="v1.0.0", name="v1.0.0", description="## 变更\n- x"
+    )
+    assert release.tag_name == "v1.0.0"
+    assert release.web_url.endswith("/releases/v1.0.0")
+    assert (await scm.get_release(project, tag_name="v1.0.0")).tag_name == "v1.0.0"
+    create_request = next(
+        item
+        for item in stub.state.requests
+        if item["method"] == "POST" and item["path"].endswith("/releases")
+    )
+    assert create_request["body"] == {
+        "tag_name": "v1.0.0",
+        "name": "v1.0.0",
+        "description": "## 变更\n- x",
+    }

@@ -56,6 +56,27 @@ class Settings(BaseSettings):
     #: 高置信重复自动关联并关闭
     duplicate_autoclose_enabled: bool = True
     duplicate_min_confidence: float = 0.8
+
+    # ---------- 周期扫描（TODO #1） ----------
+    #: 总开关：补偿巡检 + commit 引用回收
+    sweep_enabled: bool = True
+    sweep_interval_sec: float = 1800.0
+    #: 补偿巡检：扫「open 且无 状态： 标签」的 issue，补建 triage
+    sweep_triage_enabled: bool = True
+    #: commit 引用回收：识别 Closes/Fixes/Resolves #N，回帖并关闭
+    sweep_resolve_enabled: bool = True
+    sweep_triage_scan_limit: int = 100
+    sweep_min_body_chars: int = 10
+    #: 只扫默认分支最近 N 天的提交
+    sweep_commit_lookback_days: int = 7
+    sweep_commit_scan_limit: int = 100
+
+    # ---------- 自动 Release（TODO #2） ----------
+    #: Tag Push 自动补 GitLab Release
+    release_enabled: bool = True
+    release_notes_max_commits: int = 200
+    #: 首次发布（没有上一个 tag）最多回溯多少天提交
+    release_lookback_days: int = 365
     bot_username: str = ""
     allowed_trigger_users: CsvList = Field(default_factory=list)
     min_access_level: int = 30  # Developer（PLAN §7 加固基线 8）

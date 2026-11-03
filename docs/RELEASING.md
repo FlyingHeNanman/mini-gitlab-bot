@@ -21,9 +21,9 @@ feature/*  ──PR──▶  dev  ──PR──▶  main  ──tag vX.Y.Z─�
 git switch dev && git pull
 uv run ruff check . && uv run pytest -q
 
-# 2. 提升版本号（两处必须一致，测试会校验）
-#    pyproject.toml 的 version 与 core/__init__.py 的 __version__
-vim pyproject.toml core/__init__.py
+# 2. 提升版本号（四处必须一致，测试会校验前三处）
+#    pyproject.toml / core/__init__.py / core/mcp_spec.py / uv.lock 的项目条目
+vim pyproject.toml core/__init__.py core/mcp_spec.py uv.lock
 
 # 3. 更新 CHANGELOG.md（新增一节，写清 Added/Changed/Fixed）
 
@@ -32,8 +32,8 @@ git switch main && git merge --no-ff dev
 git push origin main
 
 # 5. 打 tag 并推送 —— 这一步会触发 release.yml
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
 
 # 6. 把 main 合回 dev，避免版本号分叉
 git switch dev && git merge --no-ff main && git push origin dev
@@ -45,13 +45,13 @@ git switch dev && git merge --no-ff main && git push origin dev
 
 1. 跑一遍 `ruff check` + `pytest`（**红了就不发**）
 2. 构建镜像并推送到 `ghcr.io/flyinghenanman/mini-gitlab-bot`，标签为
-   `v0.1.0`、`0.1`、`latest`
+   `v0.2.0`、`0.2`、`latest`
 3. 用 GitHub 自动生成的 release notes 创建 Release
 
 镜像拉取：
 
 ```bash
-docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:0.1.0
+docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:0.2.0
 ```
 
 ## 版本号约定

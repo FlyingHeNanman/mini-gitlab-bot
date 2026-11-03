@@ -6,6 +6,7 @@
 
 <p align="center">
   新 issue 自动巡检、打中文标签；打上 <code>机器人：修复</code> 后自动修复并开 <b>draft MR</b>。<br>
+  周期扫描漏掉的 issue、用 commit 引用自动回帖关闭；在 main 打 tag 后自动补 <b>Release</b> 文案。<br>
   Codex CLI 做 AI 内核，Python 网关做触发器 / 上下文准备 / 收尾编排。
 </p>
 
@@ -33,7 +34,8 @@
 
 > **新 issue 自动巡检 → 打类型/严重度/组件标签 → 人工打 `机器人：修复` → 拉代码 → 装依赖 → AI 改代码 → 跑测试 → 推分支 → 开 draft MR → 回帖告诉你结果**
 
-合并永远由人决定。机器人的产出是 issue 上的**巡检结论 + 状态评论**，以及（人工确认后）一个 **draft MR**。
+合并永远由人决定。机器人的产出是 issue 上的**巡检结论 + 状态评论**，以及（人工确认后）一个 **draft MR**；
+  另有两条兜底链路：**周期扫描**补做漏投的巡检、识别 `Closes/Fixes/Resolves #N` 自动回帖并关闭，**Tag Push** 后按提交分类补 GitLab Release 说明。
 
 ## 一次完整的闭环
 
@@ -57,6 +59,14 @@ issue #8  「parse_labels 在空标签时返回 None」
 ```
 
 失败也会说话：`状态：处理失败` + 一条带**失败阶段、原因、日志尾部**的评论，而不是静默消失。
+
+## 周期扫描与自动 Release
+
+两条链路都复用同一个持久队列与状态机，不额外起服务：
+
+- **补偿巡检**（`SWEEP_TRIAGE_ENABLED`）：每 `SWEEP_INTERVAL_SEC` 扫白名单项目里「open 且没有 `状态：` 标签」的 issue，按每项目每小时配额补建 triage，专治 webhook 漏投。
+- **commit 引用回收**（`SWEEP_RESOLVE_ENABLED`）：扫默认分支最近 `SWEEP_COMMIT_LOOKBACK_DAYS` 天提交，遇到 `Closes #12` / `Fixes #12, #13` / `Resolves #12` 时，对仍 open 的 #12 回帖「已由提交修复」、打 `状态：已解决` 并关闭。评论带 marker，重跑只更新同一条。
+- **自动 Release**（`RELEASE_ENABLED`）：Tag Push Hook 产生**新建 tag**时（忽略分支 push、删 tag、移动/重推 tag），找上一个 tag → compare 提交 → 按 Conventional Commits 分组生成中文 release notes → 创建 GitLab Release。已有 Release 不覆盖。
 
 ## 工作流
 
@@ -95,7 +105,7 @@ flowchart LR
 git clone https://github.com/FlyingHeNanman/mini-gitlab-bot.git
 cd mini-gitlab-bot
 
-docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:0.1.0   # 或本地 docker compose build
+docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:0.2.0   # 或本地 docker compose build
 
 cp .env.example .env
 # 至少填：WEBHOOK_SECRET / GITLAB_TOKEN / GITLAB_READONLY_TOKEN / REPO_WHITELIST / MODEL_BASE_URL
@@ -113,15 +123,17 @@ docker compose up -d
 | --- | --- |
 | 机器人账号 | 建一个专用账号（如 `gitlab-bot`），角色 **Developer**，不要给 Maintainer/Owner |
 | 两个 Token | 主 token：`api`；只读 token：`read_api`（给 MCP 用，物理上不能写） |
-| 标签 | 不需要手工建：机器人第一次干活时自动创建 31 个中文标签（类型/严重度/组件/状态/证据/风险/命令） |
-| Webhook | Settings → Webhooks → `http://<bot 容器>:8080/webhook/gitlab`，Secret 与 `WEBHOOK_SECRET` 一致，勾 **Issues events**（用评论命令再加 **Comments**） |
+| 标签 | 不需要手工建：机器人第一次干活时自动创建 32 个中文标签（类型/严重度/组件/状态/证据/风险/命令），其中 `状态：已解决` 用于 commit 引用自动关闭 |
+| Webhook | Settings → Webhooks → `http://<bot 容器>:8080/webhook/gitlab`，Secret 与 `WEBHOOK_SECRET` 一致，勾 **Issues events**、**Comments**、**Merge request events**、**Tag push events** |
 
 ### 3. 触发
 
 - **自动巡检**：新开 / 重开 issue 即触发（`TRIAGE_ENABLED=true`，默认开）；
 - **修复**：在 issue 上打 `机器人：修复` 标签，或评论 `/fix`；
 - **重跑巡检**：打 `机器人：巡检` 标签，或评论 `/triage`（人工命令需 Developer=30）；
-- **跳过**：打 `机器人：跳过` 标签，机器人不再自动巡检该 issue。
+- **跳过**：打 `机器人：跳过` 标签，机器人不再自动巡检该 issue；
+- **自动 Release**：在仓库里新建 tag（通常打在默认分支）即触发，机器人补 Release 说明；
+- **周期扫描**：`SWEEP_ENABLED=true` 时默认每 30 分钟跑一轮，无需手工触发。
 
 旧标签（`ai-fix*`）已硬切；从旧版本升级时跑一次：
 
@@ -139,7 +151,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 | --- | --- |
 | `GET /healthz` | 存活探针（不含任何任务信息） |
 | `GET /readyz` | 就绪：数据库可读 / worker 在跑 / 没有卡死任务 |
-| `GET /metrics` | Prometheus 文本：`tasks_total{state}`、`task_duration_seconds`、`queue_depth`、`worker_inflight`… |
+| `GET /metrics` | Prometheus 文本：`tasks_total{state}`、`task_duration_seconds`、`queue_depth`、`worker_inflight`、`sweep_*`、`release_*`… |
 | `GET /tasks` | **只读任务页**（token 保护）：状态、失败阶段、原因、耗时、MR 链接，点进去看日志尾部 |
 | `GET /tasks.json` | 同上，给脚本用 |
 
@@ -180,7 +192,11 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 | `GITLAB_READONLY_TOKEN` | 只读 token（`read_api`），给 MCP | — |
 | `BOT_USERNAME` | 机器人账号，用于忽略自己产生的事件 | — |
 | `MIN_ACCESS_LEVEL` | 触发者角色下限（Developer = 30） | `30` |
-| `TRIAGE_ENABLED` | 新 issue 自动巡检（排查/打中文标签/回帖）；默认关 | `false` |
+| `TRIAGE_ENABLED` | 新 issue 自动巡检（排查/打中文标签/回帖） | `true` |
+| `SWEEP_ENABLED` / `SWEEP_INTERVAL_SEC` | 周期扫描总开关 / 间隔秒数 | `true` / `1800` |
+| `SWEEP_RESOLVE_ENABLED` | 用 commit 引用自动回帖并关闭 issue | `true` |
+| `RELEASE_ENABLED` | Tag Push 自动补 GitLab Release | `true` |
+| `RELEASE_LOOKBACK_DAYS` | 首个 tag 回退多少天提交来生成说明 | `365` |
 | `ALLOWED_TRIGGER_USERS` | 可选额外白名单（与角色下限是 AND） | 空 |
 | `MODEL_BASE_URL` / `MODEL_NAME` | 内网模型端点（需支持 Responses API）/ 模型名 | — |
 | `LLM_API_KEY` | 模型 key（只进 agent 子进程环境） | — |
@@ -200,7 +216,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 582 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 633 项，无需 GitLab / 无需 LLM
 ```
 
 测试分层：
@@ -224,7 +240,8 @@ E2E_STUB_AGENT=0 MODEL_BASE_URL=… MODEL_NAME=… LLM_API_KEY=… ./scripts/e2e
 
 ```
 core/      状态机 · 领域模型 · diff 策略 · context.md 渲染 · 编排器 · worker
-           · MCP 工具契约 · 日志 · 指标 · 任务页渲染          ← 纯逻辑，零 IO
+           · 周期扫描（sweep）· Release 说明/编排 · MCP 工具契约 · 日志
+           · 指标 · 任务页渲染                              ← 纯逻辑，零 IO
 ports/     store · scm · vcs · agent · workspace · env · notifier · janitor
 adapters/  sqlite_store · gitlab_client · git_cli · codex_cli · uv_env
            · local_workspace · janitor · proc（子进程+脱敏）· fakes · unavailable
@@ -242,11 +259,13 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 582 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 633 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
 | 自动修（真件） | ✅ 巡检判定 eligible → 内部派生 fix → 真 codex 修复 → draft MR（父任务链、draft、Closes 均验证） |
 | 重复/指派 | ✅ 高置信重复关联并关闭；CODEOWNERS 命中即指派；GitLab assign/link/close API 已真机验证 |
 | 合并解释（真件） | ✅ 真 GitLab MR merge → 不 clone、只看 diff → 真 codex 解释评论 + 状态：已合并 |
+| 周期扫描 / 自动关闭 | ✅ 单元 + 端到端假件 + 真 HTTP 桩验证；`状态：已解决` 与评论幂等已覆盖，**真 GitLab 待验证** |
+| 自动 Release | ✅ Tag Push 解析、提交分组、已有 Release 跳过、端到端假件 + 真 HTTP 桩验证；**真 GitLab Release API 待验证** |
 | 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
 | 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |
 | 只读 MCP | ✅ 11 个工具在真实 GitLab 数据上逐个验证（含真实 CI 日志） |
@@ -258,6 +277,7 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 ## 文档
 
 - [PLAN.md](PLAN.md) —— 架构定案、关键决策、已验证的技术事实、每个里程碑的落地记录
+- [docs/design/auto-triage.md](docs/design/auto-triage.md) —— 触发/巡检/标签/周期扫描与自动 Release 的设计
 - [CHANGELOG.md](CHANGELOG.md) —— 版本变更
 - [docs/RELEASING.md](docs/RELEASING.md) —— 分支模型与发版流程
 - [docs/templates.md](docs/templates.md) —— MR 描述 / 状态评论 / report.json 的模板

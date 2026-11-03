@@ -186,3 +186,21 @@ def test_command_triage_infers_triage_kind(store: SqliteStore, clock: Clock) -> 
     )
     assert outcome.created and outcome.task is not None
     assert outcome.task.kind is TaskKind.TRIAGE
+
+
+def test_tag_push_infers_release_kind_and_subject(store: SqliteStore, clock: Clock) -> None:
+    outcome = store.enqueue(
+        make_trigger(
+            delivery_key="d-tag",
+            kind=TriggerKind.TAG_PUSH,
+            issue_iid=0,
+            tag_name="v1.0.0",
+            subject_sha="abc123",
+        ),
+        now=clock(),
+    )
+    assert outcome.created and outcome.task is not None
+    task = outcome.task
+    assert task.kind is TaskKind.RELEASE
+    assert task.subject_key == "tag:v1.0.0"
+    assert task.payload["tag_name"] == "v1.0.0"

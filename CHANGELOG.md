@@ -2,6 +2,32 @@
 
 本项目的所有重要变更都记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-11-03
+
+在 v0.1.0 的事故式修复链路上，补齐两条「不需要人工盯着」的收尾能力：**周期扫描开放 issue 并用 commit 引用自动回帖/关闭**，以及 **tag push 后自动补 GitLab Release 文案**。两者都复用已有的持久队列、标签、评论与状态机，不引入新的运行时依赖。
+
+### 新增
+
+- **周期扫描（`SWEEP_*`）**：每 30 分钟（可配）扫白名单项目，做两件事：
+  - **补偿巡检**：对「open 且没有任何 `状态：` 标签」的 issue 补建 triage 任务，按每项目每小时配额限流，解决 webhook 漏投（GitLab 连续失败会临时/永久禁用 hook）导致的漏单。
+  - **commit 引用回收**：扫默认分支最近 N 天提交，识别 `Closes/Fixes/Resolves #N`（含 `#1, #2`、`#1 and #2`），对仍 open 的 issue 回帖「已由提交修复」、打 `状态：已解决` 并关闭；评论带 marker，重跑原地更新，不刷屏。
+  - 新增 `TriggerKind.SWEEP`、`IssueSummary` / `CommitInfo` 模型，以及 `resolve_project` / `list_open_issues` / `list_recent_commits` 端口与 GitLab 实现。
+- **自动 Release（`RELEASE_*`）**：监听 GitLab **Tag Push Hook** 的新建 tag（忽略分支 push、删 tag、移动/重推 tag），入队 `release` 任务：
+  - 找到上一个 tag，用 compare API 取提交范围；首个 tag 退回最近提交；
+  - 按 Conventional Commits（`feat` / `fix` / `perf` / `refactor` / `docs` / `test` / `build` / `ci` / `chore` / `style` / `revert`）分组，生成中文 Markdown 发布说明，附提交短链接、对比链接、破坏性变更标记；
+  - 已有 Release 直接跳过，不覆盖人工改写的说明；重复投递/重试幂等。
+  - 新增 `TriggerKind.TAG_PUSH`、`TaskKind.RELEASE`、`TagInfo` / `ReleaseInfo` 模型，以及 `list_tags` / `compare_commits` / `get_release` / `create_release` 端口与 GitLab 实现。
+- **标签**：状态组新增 `状态：已解决`，固定标签从 31 个增至 32 个；triage/explain 的状态标签流转保持兼容。
+- **运维指标**：`sweep_runs_total` / `sweep_triaged_total` / `sweep_resolved_total` / `sweep_errors_total`、`release_total` / `release_skipped_total` / `release_failures_total`。
+
+### 修复
+
+- **Janitor 未接入 Worker**：v0.1.0 装配了清理器却没有传给 worker，导致保留策略在生产中不生效；v0.2.0 已修复，Worker 的常驻维护循环同时启动 janitor 与 sweeper。
+
+### 测试
+
+- 全量 **633 项**测试通过，`ruff check` 干净；新增周期扫描、commit 引用解析、Release 说明生成、Tag Push 解析、Release 端口（真 HTTP 打桩 GitLab）与两条端到端流水线测试。
+
 ## [0.1.0] - 2026-10-19
 
 首个可部署版本：给 GitLab issue 打上 `ai-fix` 标签，机器人自动跑完「准备环境 → Codex 修复 → 校验 → push → draft MR → 状态评论 → 标签流转」整条链路。
@@ -25,4 +51,5 @@
 - agent 阶段的网络与凭据是硬隔离；需要 MCP 时只给只读 token。
 - 真机验证过 GitLab CE 19.5 与 codex 0.157.1；更老/更新版本未逐一验证。
 
+[0.2.0]: https://github.com/FlyingHeNanman/mini-gitlab-bot/releases/tag/v0.2.0
 [0.1.0]: https://github.com/FlyingHeNanman/mini-gitlab-bot/releases/tag/v0.1.0

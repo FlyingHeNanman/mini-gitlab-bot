@@ -22,6 +22,13 @@ _DEFINITIONS: dict[str, tuple[str, str]] = {
     "worker_claims_total": ("counter", "worker 领取任务的次数"),
     "janitor_runs_total": ("counter", "保留策略清理执行次数"),
     "janitor_removed_total": ("counter", "保留策略删除的对象数（按类型）"),
+    "sweep_runs_total": ("counter", "周期扫描执行次数"),
+    "sweep_triaged_total": ("counter", "周期扫描补建的 triage 任务数"),
+    "sweep_resolved_total": ("counter", "commit 引用回收自动关闭的 issue 数"),
+    "sweep_errors_total": ("counter", "周期扫描错误数"),
+    "release_total": ("counter", "Release 任务处理次数"),
+    "release_skipped_total": ("counter", "Release 已存在而跳过的次数"),
+    "release_failures_total": ("counter", "Release 任务失败次数"),
     "queue_depth": ("gauge", "队列深度（按队列类别）"),
     "worker_inflight": ("gauge", "当前并发执行中的任务数"),
 }

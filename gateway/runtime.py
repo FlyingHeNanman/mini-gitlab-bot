@@ -42,8 +42,10 @@ from core.metrics import Metrics
 from core.models import Task
 from core.orchestrator import OrchestratorConfig, TaskOrchestrator
 from core.policy import DiffPolicy
+from core.release_orchestrator import ReleaseConfig, ReleaseOrchestrator
 from core.router import KindRouter
 from core.states import TaskKind
+from core.sweep import SweepConfig, Sweeper
 from core.triage_orchestrator import TriageOrchestrator
 from core.worker import Worker
 from gateway.config import Settings
@@ -71,11 +73,14 @@ class Runtime:
     orchestrator: TaskOrchestrator
     triage_orchestrator: TriageOrchestrator
     explain_orchestrator: ExplainOrchestrator
+    release_orchestrator: ReleaseOrchestrator
     router: KindRouter
     worker: Worker | None
     clock: Callable[[], datetime]
     metrics: Metrics
     janitor: Any
+    #: 周期扫描器（补偿巡检 + commit 引用回收）；None = 关闭
+    sweeper: Any
     #: 只读任务页的 token；空 = 页面关闭
     admin_token: str
 
@@ -94,6 +99,7 @@ def build_runtime(
     clock: Callable[[], datetime] = _utcnow,
     metrics: Metrics | None = None,
     janitor: Any | None = None,
+    sweeper: Any | None = None,
 ) -> Runtime:
     store = store if store is not None else SqliteStore(settings.db_path)
     scm = scm if scm is not None else UnavailableSCM()
@@ -162,9 +168,43 @@ def build_runtime(
         timeout_sec=settings.agent_timeout_sec,
         model=settings.model_explain,
     )
-    router = KindRouter(
-        {TaskKind.FIX: orchestrator, TaskKind.TRIAGE: triage, TaskKind.EXPLAIN: explain}
+    release = ReleaseOrchestrator(
+        store=store,
+        scm=scm,
+        clock=clock,
+        config=ReleaseConfig(
+            max_commits=settings.release_notes_max_commits,
+            lookback_days=settings.release_lookback_days,
+        ),
+        metrics=metrics,
     )
+    router = KindRouter(
+        {
+            TaskKind.FIX: orchestrator,
+            TaskKind.TRIAGE: triage,
+            TaskKind.EXPLAIN: explain,
+            TaskKind.RELEASE: release,
+        }
+    )
+    if sweeper is None and settings.sweep_enabled:
+        sweeper = Sweeper(
+            store=store,
+            scm=scm,
+            projects=tuple(settings.repo_whitelist),
+            settings=SweepConfig(
+                triage_enabled=settings.sweep_triage_enabled,
+                resolve_enabled=settings.sweep_resolve_enabled,
+                interval_sec=settings.sweep_interval_sec,
+                triage_scan_limit=settings.sweep_triage_scan_limit,
+                triage_quota_per_hour=settings.triage_quota_per_hour,
+                min_body_chars=settings.sweep_min_body_chars,
+                commit_lookback_days=settings.sweep_commit_lookback_days,
+                commit_scan_limit=settings.sweep_commit_scan_limit,
+                max_attempts=settings.max_attempts,
+            ),
+            clock=clock,
+            metrics=metrics,
+        )
 
     worker: Worker | None = None
     if with_worker and settings.worker_enabled:
@@ -189,6 +229,8 @@ def build_runtime(
             clock=clock,
             on_task_failed=_on_task_failed,
             kinds=router.kinds(),
+            janitor=janitor,
+            sweeper=sweeper,
         )
 
     return Runtime(
@@ -203,11 +245,13 @@ def build_runtime(
         orchestrator=orchestrator,
         triage_orchestrator=triage,
         explain_orchestrator=explain,
+        release_orchestrator=release,
         router=router,
         worker=worker,
         clock=clock,
         metrics=metrics,
         janitor=janitor,
+        sweeper=sweeper,
         admin_token=admin_token,
     )
 

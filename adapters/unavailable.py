@@ -9,16 +9,21 @@ M2 用 `GitCli` + `CodexCli` + `LocalWorkspace` 替换，M3 用 `GitLabClient` �
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from core.models import (
     AgentResult,
+    CommitInfo,
     DiffSummary,
     EnvReport,
     IssueContext,
+    IssueSummary,
     MergeRequestContext,
     MergeRequestRef,
     ProjectRef,
+    ReleaseInfo,
+    TagInfo,
     Task,
     Workdir,
 )
@@ -41,6 +46,30 @@ class UnavailableSCM:
         raise AdapterUnavailable("GitLabClient(SCM)", self._milestone)
 
     async def default_branch(self, project: ProjectRef) -> str:
+        self._boom()
+
+    async def resolve_project(self, path: str) -> ProjectRef | None:
+        self._boom()
+
+    async def list_open_issues(
+        self, project: ProjectRef, *, limit: int = 100
+    ) -> tuple[IssueSummary, ...]:
+        self._boom()
+
+    async def list_recent_commits(
+        self, project: ProjectRef, *, ref: str, since: datetime, limit: int = 50
+    ) -> tuple[CommitInfo, ...]:
+        self._boom()
+
+    async def list_tags(self, project: ProjectRef, *, limit: int = 100) -> tuple[TagInfo, ...]:
+        self._boom()
+
+    async def compare_commits(
+        self, project: ProjectRef, *, from_ref: str, to_ref: str, limit: int = 200
+    ) -> tuple[CommitInfo, ...]:
+        self._boom()
+
+    async def get_release(self, project: ProjectRef, *, tag_name: str) -> ReleaseInfo | None:
         self._boom()
 
     async def get_member_access_level(self, project_id: int, user_id: int) -> int | None:
@@ -89,6 +118,11 @@ class UnavailableSCM:
         self._boom()
 
     async def close_issue(self, task: Task) -> None:
+        self._boom()
+
+    async def create_release(
+        self, project: ProjectRef, *, tag_name: str, name: str, description: str
+    ) -> ReleaseInfo:
         self._boom()
 
 

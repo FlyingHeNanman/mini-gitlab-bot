@@ -59,6 +59,7 @@ def make_trigger(
     project_id: int = PROJECT_ID,
     mr_iid: int | None = None,
     subject_sha: str | None = None,
+    tag_name: str | None = None,
 ) -> Trigger:
     return Trigger(
         kind=kind,
@@ -69,4 +70,5 @@ def make_trigger(
         command=command,
         mr_iid=mr_iid,
         subject_sha=subject_sha,
+        tag_name=tag_name,
     )

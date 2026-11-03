@@ -23,6 +23,7 @@ class TaskKind(StrEnum):
     FIX = "fix"
     TRIAGE = "triage"
     EXPLAIN = "explain"
+    RELEASE = "release"
 
 
 class TaskState(StrEnum):
@@ -96,6 +97,14 @@ STAGE_LABELS_BY_KIND: dict[TaskKind, dict[TaskState, str]] = {
         TaskState.SUCCEEDED: "已完成",
         TaskState.FAILED: "失败",
     },
+    TaskKind.RELEASE: {
+        TaskState.QUEUED: "入队",
+        TaskState.PREPARING: "收集提交",
+        TaskState.RUNNING: "生成发布说明",
+        TaskState.FINALIZING: "发布 Release",
+        TaskState.SUCCEEDED: "已完成",
+        TaskState.FAILED: "失败",
+    },
 }
 
 
@@ -104,7 +113,7 @@ def stage_label(state: TaskState, kind: TaskKind = TaskKind.FIX) -> str:
     return labels.get(state, STAGE_LABELS.get(state, state.value))
 
 
-#: 每种任务只允许自己的流转图。fix 沿用 M1 的完整流水线；triage/explain 是
+#: 每种任务只允许自己的流转图。fix 沿用 M1 的完整流水线；triage/explain/release 是
 #: `queued → preparing → running → finalizing → succeeded|failed` 的粗粒度流程。
 KIND_TRANSITIONS: dict[TaskKind, dict[TaskState, frozenset[TaskState]]] = {
     TaskKind.FIX: ALLOWED_TRANSITIONS,
@@ -117,6 +126,14 @@ KIND_TRANSITIONS: dict[TaskKind, dict[TaskState, frozenset[TaskState]]] = {
         TaskState.FAILED: frozenset(),
     },
     TaskKind.EXPLAIN: {
+        TaskState.QUEUED: frozenset({TaskState.PREPARING, TaskState.FAILED}),
+        TaskState.PREPARING: frozenset({TaskState.RUNNING, TaskState.FAILED}),
+        TaskState.RUNNING: frozenset({TaskState.FINALIZING, TaskState.FAILED}),
+        TaskState.FINALIZING: frozenset({TaskState.SUCCEEDED, TaskState.FAILED}),
+        TaskState.SUCCEEDED: frozenset(),
+        TaskState.FAILED: frozenset(),
+    },
+    TaskKind.RELEASE: {
         TaskState.QUEUED: frozenset({TaskState.PREPARING, TaskState.FAILED}),
         TaskState.PREPARING: frozenset({TaskState.RUNNING, TaskState.FAILED}),
         TaskState.RUNNING: frozenset({TaskState.FINALIZING, TaskState.FAILED}),
