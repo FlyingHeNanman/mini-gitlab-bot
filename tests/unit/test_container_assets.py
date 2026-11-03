@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "Dockerfile"
 COMPOSE = ROOT / "docker-compose.yml"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 
 
 def dockerfile() -> str:
@@ -121,3 +122,15 @@ def test_compose_pins_codex_version_arg() -> None:
 @pytest.mark.parametrize("name", ["core", "ports", "adapters", "gateway"])
 def test_package_dirs_exist(name: str) -> None:
     assert (ROOT / name).is_dir()
+
+
+def test_release_workflow_uses_semver_image_tag_not_v_tag() -> None:
+    """镜像标签是 `0.2.0`（metadata-action 会去掉 `v`），不是 tag 名 `v0.2.0`。
+
+    2026-11-03 的 v0.2.0 发布踩过这个坑：Release 正文里的 `docker pull ...:v0.2.0`
+    实际拉不到镜像，因为 GHCR 上只有 `0.2.0` / `0.2` / `latest`。
+    """
+    text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert "type=semver,pattern={{version}}" in text
+    assert "ghcr.io/flyinghenanman/mini-gitlab-bot:${{ steps.meta.outputs.version }}" in text
+    assert "ghcr.io/flyinghenanman/mini-gitlab-bot:${{ github.ref_name }}" not in text

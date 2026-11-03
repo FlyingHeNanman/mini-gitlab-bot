@@ -65,12 +65,12 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           body: |
-            镜像：`ghcr.io/flyinghenanman/mini-gitlab-bot:${{ github.ref_name }}`（同时打 `latest`）
+            镜像：`ghcr.io/flyinghenanman/mini-gitlab-bot:${{ steps.meta.outputs.version }}`（同时打短版本与 `latest`）
 
             拉取：
 
             ```bash
-            docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:${{ github.ref_name }}
+            docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:${{ steps.meta.outputs.version }}
             ```
 
             详细变更见仓库根的 `CHANGELOG.md`。

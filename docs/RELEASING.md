@@ -45,7 +45,7 @@ git switch dev && git merge --no-ff main && git push origin dev
 
 1. 跑一遍 `ruff check` + `pytest`（**红了就不发**）
 2. 构建镜像并推送到 `ghcr.io/flyinghenanman/mini-gitlab-bot`，标签为
-   `v0.2.0`、`0.2`、`latest`
+   `0.2.0`、`0.2`、`latest`（注意：semver 镜像标签不带 `v` 前缀）
 3. 用 GitHub 自动生成的 release notes 创建 Release
 
 镜像拉取：
