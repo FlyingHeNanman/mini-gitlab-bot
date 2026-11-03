@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from core.models import IssueContext, MergeRequestRef, ProjectRef, Task
+from core.models import IssueContext, MergeRequestContext, MergeRequestRef, ProjectRef, Task
 
 
 class SCM(Protocol):
@@ -30,6 +30,10 @@ class SCM(Protocol):
         ...
 
     async def load_issue_context(self, task: Task) -> IssueContext: ...
+
+    async def load_merge_request_context(self, task: Task) -> MergeRequestContext:
+        """explain 输入：MR 元信息 + diff + closes_issues（不 clone）。"""
+        ...
 
     async def list_labels(self, project_id: int) -> tuple[str, ...]:
         """项目里已有的标签名（`ensure_labels` 幂等创建用）。"""

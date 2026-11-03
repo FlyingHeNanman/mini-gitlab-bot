@@ -11,7 +11,7 @@ from core.labels import TRIAGE_LABEL, TRIGGER_LABEL
 from core.models import TriggerKind
 from core.states import TaskKind, TaskState
 from gateway.app import create_app
-from tests.payloads import headers, issue_payload, note_payload
+from tests.payloads import headers, issue_payload, merge_payload, note_payload
 
 WEBHOOK = "/webhook/gitlab"
 
@@ -302,3 +302,35 @@ async def test_comment_triage_command_is_queued(make_runtime, settings) -> None:
     task = runtime.store.list_tasks()[0]
     assert task.kind is TaskKind.TRIAGE
     assert task.command == "triage"
+
+
+async def test_merge_event_queues_explain(make_runtime, settings) -> None:
+    runtime, _ = make_runtime()
+    app = create_app(settings=settings, runtime=runtime)
+    response = await post(app, merge_payload(), headers(event="Merge Request Hook", delivery="m-1"))
+    body = response.json()
+    assert body["status"] == "queued"
+    task = runtime.store.get(body["task_id"])
+    assert task.kind is TaskKind.EXPLAIN
+    assert task.mr_iid == 3
+    assert task.issue_iid == 12
+    assert task.subject_key == "mr:3:deadbeefcafe"
+
+
+async def test_triage_quota_limits_per_project(make_runtime, settings) -> None:
+    runtime, _ = make_runtime()
+    limited = settings.model_copy(update={"triage_quota_per_hour": 1})
+    app = create_app(settings=limited, runtime=runtime)
+    first = await post(
+        app,
+        issue_payload(action="open", change_labels=False, iid=12, current=()),
+        headers(delivery="q-1"),
+    )
+    assert first.json()["status"] == "queued"
+    second = await post(
+        app,
+        issue_payload(action="open", change_labels=False, iid=13, current=()),
+        headers(delivery="q-2"),
+    )
+    assert second.json() == {"status": "ignored", "reason": "triage_quota_exceeded"}
+    assert runtime.store.count() == 1

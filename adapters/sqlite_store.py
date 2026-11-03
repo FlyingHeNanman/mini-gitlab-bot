@@ -257,6 +257,7 @@ class SqliteStore:
                 kind=kind,
                 subject_key=subject,
                 parent_task_id=parent_task_id,
+                mr_iid=trigger.mr_iid,
                 payload=dict(payload or {}),
                 max_attempts=max_attempts,
                 created_at=now,
@@ -276,6 +277,7 @@ class SqliteStore:
                 "kind": task.kind.value,
                 "subject_key": task.subject_key,
                 "parent_task_id": task.parent_task_id,
+                "mr_iid": task.mr_iid,
                 "attempts": task.attempts,
                 "max_attempts": task.max_attempts,
                 "report_json": "{}",
@@ -348,11 +350,40 @@ class SqliteStore:
             )
         return [_row_to_task(row) for row in rows]
 
+    def latest_task(
+        self,
+        project_id: int,
+        kind: TaskKind,
+        subject_key: str,
+        *,
+        state: TaskState = TaskState.SUCCEEDED,
+    ) -> Task | None:
+        """同项目同 kind 同去重键的最近一条指定状态任务（explain 取 triage 结论用）。"""
+        row = self._fetch_one(
+            "SELECT * FROM tasks WHERE project_id=? AND kind=? AND subject_key=? AND state=?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (project_id, kind.value, subject_key, state.value),
+        )
+        return _row_to_task(row) if row else None
+
     def count(self, *, state: TaskState | None = None) -> int:
         if state is None:
             row = self._fetch_one("SELECT COUNT(*) AS n FROM tasks")
         else:
             row = self._fetch_one("SELECT COUNT(*) AS n FROM tasks WHERE state=?", (state.value,))
+        return int(row["n"]) if row else 0
+
+    def count_tasks_since(
+        self,
+        project_id: int,
+        kind: TaskKind,
+        since: datetime,
+    ) -> int:
+        """某项目某 kind 在 `since` 之后创建的任务数（triage 配额用）。"""
+        row = self._fetch_one(
+            "SELECT COUNT(*) AS n FROM tasks WHERE project_id=? AND kind=? AND created_at>=?",
+            (project_id, kind.value, _iso(since)),
+        )
         return int(row["n"]) if row else 0
 
     # ------------------------------------------------------------------ #

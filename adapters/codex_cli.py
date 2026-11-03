@@ -125,7 +125,13 @@ class CodexCli:
     # ------------------------------------------------------------------ #
 
     async def run(
-        self, task: Task, *, workdir: Workdir, context_path: str, timeout_sec: float
+        self,
+        task: Task,
+        *,
+        workdir: Workdir,
+        context_path: str,
+        timeout_sec: float,
+        model: str | None = None,
     ) -> AgentResult:
         job_logs = Path(self.log_dir) / task.id
         job_logs.mkdir(parents=True, exist_ok=True)
@@ -144,6 +150,7 @@ class CodexCli:
             workdir=workdir,
             context_name=context_name,
             last_message=str(last_message_path),
+            model=model,
         )
         env = self._child_env(task=task, tmp_dir=tmp_dir, workdir=workdir)
 
@@ -190,7 +197,13 @@ class CodexCli:
     # ------------------------------------------------------------------ #
 
     async def _build_argv(
-        self, *, task: Task, workdir: Workdir, context_name: str, last_message: str
+        self,
+        *,
+        task: Task,
+        workdir: Workdir,
+        context_name: str,
+        last_message: str,
+        model: str | None = None,
     ) -> list[str]:
         sandbox = self.settings.sandbox_mode or "workspace-write"
         argv = [
@@ -213,8 +226,9 @@ class CodexCli:
         ]
         if self.settings.model_provider:
             argv += ["-c", f'model_provider="{self.settings.model_provider}"']
-        if self.settings.model_name:
-            argv += ["-c", f'model="{self.settings.model_name}"']
+        selected_model = (model or "").strip() or self.settings.model_name
+        if selected_model:
+            argv += ["-c", f'model="{selected_model}"']
         if self.settings.model_base_url:
             # PROVIDER 定义也走 `-c`（优先级 30）：镜像里不需要任何预置 codex 配置，
             # 且 `wire_api` 不会被用户级/项目级配置改成已废弃的 "chat"（PLAN §6 #1）

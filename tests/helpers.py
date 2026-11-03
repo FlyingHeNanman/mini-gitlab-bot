@@ -57,6 +57,8 @@ def make_trigger(
     user_id: int | None = ALICE_ID,
     path: str = PROJECT_PATH,
     project_id: int = PROJECT_ID,
+    mr_iid: int | None = None,
+    subject_sha: str | None = None,
 ) -> Trigger:
     return Trigger(
         kind=kind,
@@ -65,4 +67,6 @@ def make_trigger(
         actor=TriggerActor(user_id=user_id, username=username),
         delivery_key=delivery_key,
         command=command,
+        mr_iid=mr_iid,
+        subject_sha=subject_sha,
     )

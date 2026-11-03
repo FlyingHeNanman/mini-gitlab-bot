@@ -28,6 +28,10 @@ class Workspace(Protocol):
         """返回（并确保存在）本 job 专属的临时目录。"""
         ...
 
+    async def create_job_dir(self, task) -> Workdir:
+        """为**不需要 clone**的任务（explain）创建独立工作目录。"""
+        ...
+
     async def remove(self, workdir: Workdir) -> None:
         """删除整个 job 目录（终态清理）。"""
         ...

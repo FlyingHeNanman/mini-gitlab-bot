@@ -20,6 +20,7 @@ from core.models import (
     DiffSummary,
     EnvReport,
     IssueContext,
+    MergeRequestContext,
     MergeRequestRef,
     ProjectRef,
     Task,
@@ -64,6 +65,7 @@ class FakeSCM:
         comments: Sequence[str] = ("我也遇到了这个问题",),
         access_levels: dict[int, int] | None = None,
         user_ids: dict[str, int] | None = None,
+        merge_request: MergeRequestContext | None = None,
         project_labels: Sequence[str] = (),
         fail_on: Sequence[str] = (),
     ) -> None:
@@ -75,6 +77,7 @@ class FakeSCM:
         self.issue_comments = tuple(comments)
         self.access_levels = dict(access_levels or {})
         self.user_ids = dict(user_ids or {})
+        self.merge_request = merge_request
         self.fail_on = set(fail_on)
 
         # 记录
@@ -117,6 +120,22 @@ class FakeSCM:
             web_url=f"https://gitlab.example.com/{task.project.path}/-/issues/{task.issue_iid}",
             labels=tuple(sorted(self.current_labels)),
             comments=self.issue_comments,
+        )
+
+    async def load_merge_request_context(self, task: Task) -> MergeRequestContext:
+        self._maybe_fail("load_merge_request_context")
+        if self.merge_request is not None:
+            return self.merge_request
+        return MergeRequestContext(
+            iid=task.mr_iid or 1,
+            title="Draft: fix(issue)",
+            description=f"Closes #{task.issue_iid}",
+            source_branch="ai-fix/12",
+            target_branch="main",
+            merge_commit_sha="deadbeefcafe",
+            web_url=f"https://gitlab.example.com/{task.project.path}/-/merge_requests/1",
+            diff="--- app.py\n+ return []",
+            closes_issues=(task.issue_iid,),
         )
 
     async def list_labels(self, project_id: int) -> tuple[str, ...]:
@@ -243,7 +262,13 @@ class FakeAgent:
         self.calls: list[dict[str, Any]] = []
 
     async def run(
-        self, task: Task, *, workdir: Workdir, context_path: str, timeout_sec: float
+        self,
+        task: Task,
+        *,
+        workdir: Workdir,
+        context_path: str,
+        timeout_sec: float,
+        model: str | None = None,
     ) -> AgentResult:
         self.calls.append(
             {
@@ -251,6 +276,7 @@ class FakeAgent:
                 "workdir": workdir.path,
                 "context_path": context_path,
                 "timeout_sec": timeout_sec,
+                "model": model,
             }
         )
         if self.delay_sec:
@@ -282,6 +308,9 @@ class FakeWorkspace:
         path = workdir.temp_dir
         self.temp_dirs.append(path)
         return path
+
+    async def create_job_dir(self, task) -> Workdir:
+        return Workdir(path=f"/tmp/fake-jobs/{task.id}", branch="", base_branch="")
 
     async def remove(self, workdir: Workdir) -> None:
         self.removed.append(workdir.path)

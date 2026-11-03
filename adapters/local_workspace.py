@@ -63,6 +63,12 @@ class LocalWorkspace:
         await asyncio.to_thread(os.chmod, path, 0o700)
         return str(path)
 
+    async def create_job_dir(self, task) -> Workdir:
+        """explain 不 clone：只建一个空的 job 目录放 context.md。"""
+        target = self._resolve(str(self._root / task.id))
+        await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
+        return Workdir(path=str(target), branch="", base_branch="")
+
     async def remove(self, workdir: Workdir) -> None:
         target = self._resolve(workdir.path)
         if target == self._root:

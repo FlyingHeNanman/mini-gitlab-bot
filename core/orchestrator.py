@@ -51,6 +51,8 @@ class OrchestratorConfig:
     running_label: str = RUNNING_LABEL
     done_label: str = DONE_LABEL
     failed_label: str = FAILED_LABEL
+    #: 分阶段模型（空 = CodexCli 回落 MODEL_NAME）
+    model: str = ""
     #: 只读 MCP 可用工具名；空 = 没启用（就不会在 context.md 里告诉 agent 有这些工具）
     mcp_tools: tuple[str, ...] = ()
 
@@ -154,6 +156,7 @@ class TaskOrchestrator:
                     workdir=workdir,
                     context_path=workdir.context_path,
                     timeout_sec=self._config.agent_timeout_sec,
+                    model=self._config.model or None,
                 ),
                 timeout=self._config.agent_timeout_sec,
             )

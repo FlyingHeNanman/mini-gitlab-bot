@@ -28,7 +28,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from core import __version__
 from core.logging_setup import attach_uvicorn_loggers, configure_logging
 from core.models import TriggerKind
-from core.states import ACTIVE_STATES, TaskState
+from core.states import ACTIVE_STATES, TaskKind, TaskState
 from core.tasks_view import TaskFilters, render_task_detail, render_tasks_page, task_to_dict
 from gateway.config import Settings
 from gateway.permissions import PermissionChecker
@@ -282,6 +282,20 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             trigger = parsed.trigger
             if trigger.kind is TriggerKind.ISSUE_OPEN and not settings.triage_enabled:
                 return JSONResponse({"status": "ignored", "reason": "triage_disabled"})
+            if trigger.kind is TriggerKind.ISSUE_OPEN and settings.triage_quota_per_hour > 0:
+                since = rt.clock() - timedelta(hours=1)
+                recent = rt.store.count_tasks_since(
+                    trigger.project.project_id, TaskKind.TRIAGE, since
+                )
+                if recent >= settings.triage_quota_per_hour:
+                    logger.warning(
+                        "项目 %s 的巡检配额已用尽（%s/%s 每小时），忽略 issue #%s",
+                        trigger.project.path,
+                        recent,
+                        settings.triage_quota_per_hour,
+                        trigger.issue_iid,
+                    )
+                    return JSONResponse({"status": "ignored", "reason": "triage_quota_exceeded"})
 
             # 只有人工命令（标签 / 评论）过权限闸门；新 issue 的自动巡检对所有人生效
             if trigger.kind in (TriggerKind.LABEL, TriggerKind.COMMENT):

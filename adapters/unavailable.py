@@ -16,6 +16,7 @@ from core.models import (
     DiffSummary,
     EnvReport,
     IssueContext,
+    MergeRequestContext,
     MergeRequestRef,
     ProjectRef,
     Task,
@@ -46,6 +47,9 @@ class UnavailableSCM:
         self._boom()
 
     async def load_issue_context(self, task: Task) -> IssueContext:
+        self._boom()
+
+    async def load_merge_request_context(self, task: Task) -> MergeRequestContext:
         self._boom()
 
     async def list_labels(self, project_id: int) -> tuple[str, ...]:
@@ -120,7 +124,13 @@ class UnavailableAgent:
         self._milestone = milestone
 
     async def run(
-        self, task: Task, *, workdir: Workdir, context_path: str, timeout_sec: float
+        self,
+        task: Task,
+        *,
+        workdir: Workdir,
+        context_path: str,
+        timeout_sec: float,
+        model: str | None = None,
     ) -> AgentResult:
         raise AdapterUnavailable("CodexCli(AgentRunner)", self._milestone)
 
@@ -151,6 +161,9 @@ class UnavailableWorkspace:
         self._boom()
 
     async def temp_dir(self, workdir: Workdir) -> str:
+        self._boom()
+
+    async def create_job_dir(self, task) -> Workdir:
         self._boom()
 
     async def remove(self, workdir: Workdir) -> None:

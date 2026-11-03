@@ -136,6 +136,8 @@ def parse_webhook(
         return _parse_issue(payload, settings, key, event_type)
     if object_kind == "note":
         return _parse_note(payload, settings, key, event_type)
+    if object_kind == "merge_request":
+        return _parse_merge_request(payload, settings, key, event_type)
     return _ignored("unsupported_event", key, event_type)
 
 
@@ -233,6 +235,51 @@ _COMMAND_RE = re.compile(r"^/(fix|triage|ai-fix)\b\s*(.*)$", re.IGNORECASE)
 
 #: 评论命令：`/fix` 修复、`/triage` 巡检；`/ai-fix` 是旧写法，保留兼容。
 _FIX_COMMANDS = frozenset({"fix", "ai-fix"})
+
+
+_CLOSES_RE = re.compile(r"(?i)\b(?:closes|fixes|resolves)\s+#(\d+)")
+
+
+def _parse_merge_request(
+    payload: Mapping[str, Any], settings, key: str, event_type: str
+) -> ParsedEvent:
+    """MR 合并：从标题/描述里找 `Closes #N`，进入 explain。"""
+    attrs = payload.get("object_attributes") or {}
+    action = attrs.get("action")
+    state = attrs.get("state")
+    if action != "merge" and state != "merged":
+        return _ignored("merge_request_not_merged", key, event_type)
+
+    text = f"{attrs.get('title') or ''}\n{attrs.get('description') or ''}"
+    match = _CLOSES_RE.search(text)
+    if match is None:
+        return _ignored("no_linked_issue", key, event_type)
+    issue_iid = int(match.group(1))
+
+    mr_iid = attrs.get("iid")
+    merge_sha = attrs.get("merge_commit_sha") or attrs.get("sha") or ""
+    if not isinstance(mr_iid, int) or not merge_sha:
+        return _ignored("missing_merge_identity", key, event_type)
+
+    ignored, context = _common_checks(payload, settings, key, event_type)
+    if ignored is not None:
+        return ignored
+
+    return ParsedEvent(
+        reason="merge_request_merged",
+        delivery_key=key,
+        event_type=event_type,
+        trigger=Trigger(
+            kind=TriggerKind.MERGE,
+            project=context["project"],
+            issue_iid=issue_iid,
+            actor=context["actor"],
+            delivery_key=key,
+            mr_iid=mr_iid,
+            subject_sha=str(merge_sha),
+            source=str(attrs.get("url") or ""),
+        ),
+    )
 
 
 def parse_command(text: str) -> str | None:

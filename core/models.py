@@ -312,3 +312,18 @@ class PermissionDecision:
     allowed: bool
     reason: str
     access_level: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MergeRequestContext:
+    """explain 任务输入：网关预取的 MR 元信息 + diff（不 clone）。"""
+
+    iid: int
+    title: str
+    description: str
+    source_branch: str
+    target_branch: str
+    merge_commit_sha: str
+    web_url: str
+    diff: str
+    closes_issues: tuple[int, ...] = ()

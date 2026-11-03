@@ -36,6 +36,7 @@ from adapters.unavailable import (
 )
 from adapters.uv_env import UvEnvPreparer, UvSettings
 from core.autofix import AutofixConfig
+from core.explain_orchestrator import ExplainOrchestrator
 from core.mcp_spec import TOOL_NAMES
 from core.metrics import Metrics
 from core.models import Task
@@ -69,6 +70,7 @@ class Runtime:
     notifier: Any
     orchestrator: TaskOrchestrator
     triage_orchestrator: TriageOrchestrator
+    explain_orchestrator: ExplainOrchestrator
     router: KindRouter
     worker: Worker | None
     clock: Callable[[], datetime]
@@ -115,6 +117,7 @@ def build_runtime(
         config=OrchestratorConfig(
             max_attempts=settings.max_attempts,
             agent_timeout_sec=settings.agent_timeout_sec,
+            model=settings.model_fix,
             diff_policy=DiffPolicy(
                 max_files=settings.diff_max_files,
                 max_lines=settings.diff_max_lines,
@@ -147,8 +150,21 @@ def build_runtime(
         ),
         duplicate_autoclose=settings.duplicate_autoclose_enabled,
         duplicate_min_confidence=settings.duplicate_min_confidence,
+        model=settings.model_triage,
     )
-    router = KindRouter({TaskKind.FIX: orchestrator, TaskKind.TRIAGE: triage})
+    explain = ExplainOrchestrator(
+        store=store,
+        scm=scm,
+        agent=agent,
+        workspace=workspace,
+        metrics=metrics,
+        clock=clock,
+        timeout_sec=settings.agent_timeout_sec,
+        model=settings.model_explain,
+    )
+    router = KindRouter(
+        {TaskKind.FIX: orchestrator, TaskKind.TRIAGE: triage, TaskKind.EXPLAIN: explain}
+    )
 
     worker: Worker | None = None
     if with_worker and settings.worker_enabled:
@@ -186,6 +202,7 @@ def build_runtime(
         notifier=notifier,
         orchestrator=orchestrator,
         triage_orchestrator=triage,
+        explain_orchestrator=explain,
         router=router,
         worker=worker,
         clock=clock,

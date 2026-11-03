@@ -68,6 +68,7 @@ class TriageOrchestrator:
         autofix: AutofixConfig | None = None,
         duplicate_autoclose: bool = True,
         duplicate_min_confidence: float = 0.8,
+        model: str = "",
     ) -> None:
         self._store = store
         self._scm = scm
@@ -79,6 +80,7 @@ class TriageOrchestrator:
         self._autofix = autofix or AutofixConfig(enabled=False)
         self._duplicate_autoclose = duplicate_autoclose
         self._duplicate_min_confidence = duplicate_min_confidence
+        self._model = model
         self._clock = clock
         self._timeout_sec = timeout_sec
         self._labels = LabelEnsurer(scm)
@@ -135,6 +137,7 @@ class TriageOrchestrator:
                     workdir=workdir,
                     context_path=workdir.context_path,
                     timeout_sec=self._timeout_sec,
+                    model=self._model or None,
                 ),
                 timeout=self._timeout_sec,
             )

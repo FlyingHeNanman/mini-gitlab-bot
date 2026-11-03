@@ -7,7 +7,7 @@ import pytest
 from core.labels import SKIP_LABEL, TRIAGE_LABEL, TRIGGER_LABEL
 from core.models import TriggerKind
 from gateway.webhook import delivery_key, parse_command, parse_webhook, verify_token
-from tests.payloads import headers, issue_payload, note_payload
+from tests.payloads import headers, issue_payload, merge_payload, note_payload
 
 
 def _parse(payload, *, hdrs=None, settings=None, raw=b"{}"):
@@ -221,3 +221,39 @@ def test_unsupported_event_is_ignored(settings) -> None:
     event = _parse({"object_kind": "push"}, settings=settings)
     assert event.trigger is None
     assert event.reason == "unsupported_event"
+
+
+# --------------------------------------------------------------------------- #
+# MR 合并 → explain
+# --------------------------------------------------------------------------- #
+
+
+def test_merged_mr_with_closes_link_triggers_explain(settings) -> None:
+    event = _parse(merge_payload(), hdrs=headers(event="Merge Request Hook"), settings=settings)
+    assert event.trigger is not None
+    assert event.reason == "merge_request_merged"
+    trigger = event.trigger
+    assert trigger.kind is TriggerKind.MERGE
+    assert trigger.issue_iid == 12
+    assert trigger.mr_iid == 3
+    assert trigger.subject_sha == "deadbeefcafe"
+
+
+def test_merged_mr_without_closes_link_is_ignored(settings) -> None:
+    event = _parse(
+        merge_payload(description="没有关联 issue"),
+        hdrs=headers(event="Merge Request Hook"),
+        settings=settings,
+    )
+    assert event.trigger is None
+    assert event.reason == "no_linked_issue"
+
+
+def test_non_merged_mr_is_ignored(settings) -> None:
+    event = _parse(
+        merge_payload(action="open", state="opened"),
+        hdrs=headers(event="Merge Request Hook"),
+        settings=settings,
+    )
+    assert event.trigger is None
+    assert event.reason == "merge_request_not_merged"

@@ -481,7 +481,7 @@ def group_of(name: str) -> str | None:
 | `AUTOFIX_MAX_FILES` / `AUTOFIX_MAX_LINES` | 自动修规模上限 | `3` / `150` |
 | `AUTOFIX_MIN_CONFIDENCE` | 自动修置信下限 | `0.7` |
 | `AUTOFIX_MIN_ACCESS_LEVEL` | 触发自动修的最低 GitLab 权限；**0 = 不检查，任何能提 issue 的账号都可** | `0` |
-| `TRIAGE_QUOTA_PER_HOUR` | 每项目每小时最多跑多少个 triage；`0` = 不限 | `20` |
+| `TRIAGE_QUOTA_PER_HOUR` | 每项目每小时最多创建多少个 triage；超限的 issue 直接忽略（不排队），`0` = 不限 | `20` |
 | `TRIAGE_CONCURRENCY` / `EXPLAIN_CONCURRENCY` / `FIX_CONCURRENCY` | 分 kind 并发 | `1 / 1 / 2` |
 | `DUPLICATE_AUTOCLOSE_ENABLED` | 重复自动关闭 | `true` |
 | `DUPLICATE_MIN_CONFIDENCE` | 自动关闭置信下限 | `0.8` |
@@ -498,7 +498,7 @@ def group_of(name: str) -> str | None:
 
 本期按「内网公开仓库、所有人可自动响应」的需求取 **0**；它只影响「自动修」这一个动作，**不影响 triage**（triage 对所有新 issue 无条件运行）。
 
-**关于 `TRIAGE_QUOTA_PER_HOUR`**：每个项目每小时最多跑多少次 triage（不是总量上限，是滑动/固定窗口限流）。目的是防刷 issue 把 27B 端点打满、把 fix 队列饿死；超出的 issue 进入 `状态：排队中` 并在下一窗口自动补跑（或直接落到「待人工处理」，实现时二选一，默认补跑）。`0` = 完全不限，适合单机自用。
+**关于 `TRIAGE_QUOTA_PER_HOUR`**：每个项目每小时最多跑多少次 triage（不是总量上限，是滑动/固定窗口限流）。目的是防刷 issue 把 27B 端点打满、把 fix 队列饿死；**当前实现**：超限的 issue 直接忽略（返回 `triage_quota_exceeded`，不排队），下一窗口需重开 issue 或手动 `机器人：巡检`；补跑需要「延后任务」能力，留作升级项。`0` = 完全不限，适合单机自用。
 
 ---
 
@@ -506,9 +506,9 @@ def group_of(name: str) -> str | None:
 
 | 里程碑 | 内容 | 判据 |
 | --- | --- | --- |
-| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 570 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
+| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 582 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
 | **M7 自动修 + 指派** | 裁决、内部 enqueue、组件映射（CODEOWNERS / 顶层目录） | 自动修真机验证（draft MR）；CODEOWNERS 指派、重复关闭已落地（假件） |
-| **M8 解释响应** | merge 事件、diff 读取、解释评论、标签流转 | bot MR 与人工 MR 各跑通一次 |
+| **M8 解释响应** | merge 事件、diff 读取、解释评论、标签流转 | 假件全链路 + 真 GitLab MR merge/真 codex 解释通过（含分阶段模型、配额） |
 | **M9（可选）** | 真验证（复跑 repro / 回归测试）＋ fix 迁到 Runner | 446 项测试等价迁移；真实验证一次通过、一次失败 |
 
 **M6 已落地的状态映射（临时）**：`need_info` → `状态：待补充信息`，其余成立/未复现/非缺陷/重复 →
@@ -520,6 +520,6 @@ def group_of(name: str) -> str | None:
 ## 14. 开放问题
 
 1. **旧标签清理的时机**：`scripts/migrate_labels.py` 是随版本手动跑一次，还是由 bot 启动时自动清理（风险：误删名同的标签）？建议手动跑。
-2. **配额超限后的行为**：排在下一窗口补跑（默认），还是直接标 `状态：待人工处理`？补跑更符合「所有人都会得到响应」，但极端刷单时延误较大。
+2. **配额超限后的行为（已落地为直接忽略）**：如果要「下一窗口补跑」，需要给任务加 `not_before` 延后领取；否则重开/手动巡检。
 3. **explain 的输入上限**：大 MR（几百文件）的 diff 摘要要不要截断到 N 文件 / N 行？建议默认 50 文件 / 2000 行，超出时在评论里注明「仅解释了主要改动」。
 4. **组件映射缺失**：完全无 CODEOWNERS、且改动跨多个顶层目录时，是 `组件：其他`（本稿）还是取「改动最多的顶层目录」？后者更有信息量但会误标。

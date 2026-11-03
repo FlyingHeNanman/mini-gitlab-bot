@@ -77,6 +77,39 @@ def note_payload(
     }
 
 
+def merge_payload(
+    *,
+    action: str = "merge",
+    state: str = "merged",
+    iid: int = 3,
+    title: str = "Draft: fix(issue-12): parse_labels 空标签",
+    description: str = "Closes #12",
+    merge_commit_sha: str = "deadbeefcafe",
+    target_branch: str = "main",
+    user_id: int | None = 7,
+    username: str = "alice",
+    project_id: int = PROJECT_ID,
+    path: str = PROJECT_PATH,
+) -> dict[str, Any]:
+    return {
+        "object_kind": "merge_request",
+        "event_type": "merge_request",
+        "user": {"id": user_id, "username": username},
+        "project": {"id": project_id, "path_with_namespace": path},
+        "object_attributes": {
+            "iid": iid,
+            "action": action,
+            "state": state,
+            "title": title,
+            "description": description,
+            "merge_commit_sha": merge_commit_sha,
+            "target_branch": target_branch,
+            "source_branch": "ai-fix/12-parse-labels",
+            "url": f"https://gitlab.example.com/{path}/-/merge_requests/{iid}",
+        },
+    }
+
+
 def headers(
     *,
     token: str | None = "s3cr3t",

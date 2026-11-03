@@ -35,7 +35,13 @@ from gitlab.exceptions import (
 )
 
 from adapters.proc import Scrubber
-from core.models import IssueContext, MergeRequestRef, ProjectRef, Task
+from core.models import (
+    IssueContext,
+    MergeRequestContext,
+    MergeRequestRef,
+    ProjectRef,
+    Task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +107,9 @@ class GitLabSCM:
 
     async def load_issue_context(self, task: Task) -> IssueContext:
         return await self._run("读取 issue", self._load_issue, task)
+
+    async def load_merge_request_context(self, task: Task) -> MergeRequestContext:
+        return await self._run("读取 MR", self._load_merge_request, task)
 
     async def list_labels(self, project_id: int) -> tuple[str, ...]:
         return await self._run("读取标签", self._list_labels, project_id)
@@ -230,6 +239,34 @@ class GitLabSCM:
             labels=tuple(getattr(issue, "labels", None) or ()),
             state=str(getattr(issue, "state", "opened") or "opened"),
             comments=tuple(comments),
+        )
+
+    def _load_merge_request(self, task: Task) -> MergeRequestContext:
+        project = self._get_project(task.project.project_id)
+        mr = project.mergerequests.get(task.mr_iid)
+        changes = mr.changes().get("changes", [])
+        diff_parts: list[str] = []
+        for change in changes:
+            path = str(change.get("new_path") or change.get("old_path") or "")
+            diff = str(change.get("diff") or "")
+            diff_parts.append(f"--- {path}\n{diff}")
+        closes: list[int] = []
+        try:
+            closes = [int(item.iid) for item in mr.closes_issues()]
+        except Exception:  # noqa: BLE001 某些版本/权限下没有 closes_issues API
+            closes = []
+        return MergeRequestContext(
+            iid=int(getattr(mr, "iid", task.mr_iid or 0)),
+            title=str(getattr(mr, "title", "") or ""),
+            description=str(getattr(mr, "description", "") or ""),
+            source_branch=str(getattr(mr, "source_branch", "") or ""),
+            target_branch=str(getattr(mr, "target_branch", "") or ""),
+            merge_commit_sha=str(
+                getattr(mr, "merge_commit_sha", None) or getattr(mr, "sha", "") or ""
+            ),
+            web_url=str(getattr(mr, "web_url", "") or ""),
+            diff="\n\n".join(diff_parts),
+            closes_issues=tuple(closes),
         )
 
     def _list_labels(self, project_id: int) -> tuple[str, ...]:

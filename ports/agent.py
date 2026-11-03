@@ -23,4 +23,5 @@ class AgentRunner(Protocol):
         workdir: Workdir,
         context_path: str,
         timeout_sec: float,
+        model: str | None = None,
     ) -> AgentResult: ...

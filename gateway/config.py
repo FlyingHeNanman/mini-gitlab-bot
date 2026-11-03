@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     ai_fix_label: str = TRIGGER_LABEL
     #: 新 issue 自动巡检总开关；真机验证通过后默认开启
     triage_enabled: bool = True
+    #: 每项目每小时最多创建多少个 triage 任务；0 = 不限。超限的 issue 直接忽略（不排队）
+    triage_quota_per_hour: int = 20
     #: 小改动自动修（triage 结论满足确定性规则时内部派生 fix 任务）
     autofix_enabled: bool = True
     autofix_max_files: int = 3
@@ -120,6 +122,10 @@ class Settings(BaseSettings):
     codex_bin: str = "codex"
     model_provider: str = "internal"
     model_name: str = ""
+    #: 分阶段模型：空 = 回落 MODEL_NAME（triage/explain 用小的，fix 用大的）
+    model_triage: str = ""
+    model_explain: str = ""
+    model_fix: str = ""
     #: 内网模型端点（OpenAI Responses 兼容，如 http://llm-gateway:8000/v1）。
     #: 配了它，网关就用 `-c` 把 provider 定义钉进 codex（优先级 30），镜像里不需要任何
     #: 预置的 codex 配置；留空 = 依赖操作者自己提供的 CODEX_CONFIG 或用户级配置。
