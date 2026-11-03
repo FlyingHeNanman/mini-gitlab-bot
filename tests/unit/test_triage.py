@@ -168,6 +168,15 @@ def test_triage_comment_has_marker_and_verdict() -> None:
     assert "`gateway/config.py`" in body
     assert "#7（duplicate）" in body
     assert "未经人工确认" in body
+    assert "未提交的修改" not in body
+
+
+def test_comment_warns_when_worktree_was_modified() -> None:
+    result = parse_triage_result(make_report())
+    body = render_triage_comment(make_task(), make_issue(), result, worktree_dirty=True, now=START)
+    assert "未提交的修改" in body
+    assert "已随工作目录丢弃" in body
+    assert "不代表仓库现状" in body
 
 
 def test_duplicate_comment_says_疑似重复() -> None:

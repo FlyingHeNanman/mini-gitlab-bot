@@ -174,6 +174,7 @@ class FakeVCS:
         default_factory=lambda: DiffSummary(files=("gateway/config.py",), insertions=3, deletions=1)
     )
     commit_sha: str | None = "abc1234def5678"
+    dirty: bool = False
     fail_on: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
@@ -200,6 +201,10 @@ class FakeVCS:
     async def diff(self, task: Task, workdir: Workdir) -> DiffSummary:
         self._maybe_fail("diff")
         return self.diff_summary
+
+    async def worktree_dirty(self, task: Task, workdir: Workdir) -> bool:
+        self._maybe_fail("worktree_dirty")
+        return self.dirty
 
     async def push(self, task: Task, workdir: Workdir) -> None:
         self._maybe_fail("push")

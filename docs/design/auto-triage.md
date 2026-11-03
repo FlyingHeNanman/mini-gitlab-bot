@@ -506,7 +506,7 @@ def group_of(name: str) -> str | None:
 
 | 里程碑 | 内容 | 判据 |
 | --- | --- | --- |
-| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件全链路通过（533 项）；真 GitLab 一个 issue 待验证 |
+| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 535 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
 | **M7 自动修 + 指派** | 裁决、内部 enqueue、组件映射（CODEOWNERS / 顶层目录） | 小 bug 出 draft MR；大 bug 有 assignee 和 @ |
 | **M8 解释响应** | merge 事件、diff 读取、解释评论、标签流转 | bot MR 与人工 MR 各跑通一次 |
 | **M9（可选）** | 真验证（复跑 repro / 回归测试）＋ fix 迁到 Runner | 446 项测试等价迁移；真实验证一次通过、一次失败 |

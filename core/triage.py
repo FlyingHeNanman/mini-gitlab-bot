@@ -216,6 +216,7 @@ def render_triage_comment(
     issue: IssueContext,
     result: TriageResult,
     *,
+    worktree_dirty: bool = False,
     now: datetime | None = None,
 ) -> str:
     now = now or datetime.now(UTC)
@@ -235,38 +236,44 @@ def render_triage_comment(
         for iid, relation, reason in result.similar[:MAX_SIMILAR_IN_COMMENT]
     ]
 
-    return "\n".join(
-        [
-            triage_marker(issue.iid),
-            f"## 🔎 自动巡检结论：{VERDICT_LABELS[result.verdict]}",
+    parts = [
+        triage_marker(issue.iid),
+        f"## 🔎 自动巡检结论：{VERDICT_LABELS[result.verdict]}",
+        "",
+        f"**{result.summary}**",
+        "",
+        f"- 置信度：{result.confidence:.0%}",
+        f"- 分类：`类型：{result.type_value}` / `严重度：{result.severity}` / "
+        f"`组件：{result.component}`",
+        "",
+        "### 复现",
+        "",
+        repro_block or "（未尝试复现）",
+        "",
+        "### 定位",
+        "",
+        file_lines,
+        "",
+        "### 相似 issue",
+        "",
+        _bullets(similar_lines, empty="未发现明显重复"),
+        "",
+        "### 处理建议",
+        "",
+        f"`{result.recommendation}`",
+    ]
+    if worktree_dirty:
+        parts += [
             "",
-            f"**{result.summary}**",
-            "",
-            f"- 置信度：{result.confidence:.0%}",
-            f"- 分类：`类型：{result.type_value}` / `严重度：{result.severity}` / "
-            f"`组件：{result.component}`",
-            "",
-            "### 复现",
-            "",
-            repro_block or "（未尝试复现）",
-            "",
-            "### 定位",
-            "",
-            file_lines,
-            "",
-            "### 相似 issue",
-            "",
-            _bullets(similar_lines, empty="未发现明显重复"),
-            "",
-            "### 处理建议",
-            "",
-            f"`{result.recommendation}`",
-            "",
-            f"<sub>任务 `{task.id}` · 生成于 {_ymd_hm(now)} UTC · "
-            "结论由模型生成，未经人工确认</sub>",
-            BOT_SIGNATURE,
+            "> ⚠️ 巡检期间工作区出现过未提交的修改，已随工作目录丢弃。",
+            "> 若上面的结论提到「已修复」，不代表仓库现状；仓库仍以默认分支为准。",
         ]
-    )
+    parts += [
+        "",
+        f"<sub>任务 `{task.id}` · 生成于 {_ymd_hm(now)} UTC · 结论由模型生成，未经人工确认</sub>",
+        BOT_SIGNATURE,
+    ]
+    return "\n".join(parts)
 
 
 def render_triage_failure(

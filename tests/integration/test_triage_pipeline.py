@@ -203,3 +203,15 @@ async def test_scm_failure_fails_cleanly_without_raising(make_runtime, clock: Cl
     task, _ = await h.run_triage()
     assert task.state is TaskState.FAILED
     assert "巡检执行异常" in (task.failure_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_dirty_worktree_is_flagged_in_comment(make_runtime, clock: Clock) -> None:
+    """模型没守只读纪律时，评论必须警告：临时改动已丢弃，不代表仓库现状。"""
+    h = build(make_runtime, clock, vcs=FakeVCS(dirty=True))
+    task, _ = await h.run_triage()
+    assert task.state is TaskState.SUCCEEDED
+    assert task.payload["worktree_dirty"] is True
+    body = next(c["body"] for c in h.scm.comments if c["marker"] == triage_marker(12))
+    assert "未提交的修改" in body
+    assert "不代表仓库现状" in body

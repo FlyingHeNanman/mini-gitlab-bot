@@ -94,6 +94,9 @@ class UnavailableVCS:
     async def diff(self, task: Task, workdir: Workdir) -> DiffSummary:
         self._boom()
 
+    async def worktree_dirty(self, task: Task, workdir: Workdir) -> bool:
+        self._boom()
+
     async def push(self, task: Task, workdir: Workdir) -> None:
         self._boom()
 

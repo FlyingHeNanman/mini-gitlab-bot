@@ -159,6 +159,14 @@ class GitCli:
         )
         return _parse_numstat(result.stdout)
 
+    async def worktree_dirty(self, task: Task, workdir: Workdir) -> bool:
+        """未提交改动（只看被跟踪文件，忽略 .mini-gitlab-bot 等未跟踪产物）。"""
+        result = await self._git_run(
+            self._git_argv(workdir.path, "status", "--porcelain", "--untracked-files=no"),
+            stage="status",
+        )
+        return bool(result.stdout.strip())
+
     async def push(self, task: Task, workdir: Workdir) -> None:
         await self._git_run(
             self._git_argv(

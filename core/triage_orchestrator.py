@@ -133,6 +133,7 @@ class TriageOrchestrator:
                 )
 
             triage = parse_triage_result(agent_result.report)
+            worktree_dirty = await self._worktree_dirty(task, workdir)
             add, remove = label_plan(current_labels, triage)
             task = self._store.transition(
                 task.id,
@@ -144,6 +145,7 @@ class TriageOrchestrator:
                     "confidence": triage.confidence,
                     "component": triage.component,
                     "files": list(triage.files),
+                    "worktree_dirty": worktree_dirty,
                     "repro": {
                         "command": triage.repro_command,
                         "result": triage.repro_result,
@@ -153,7 +155,9 @@ class TriageOrchestrator:
             await self._best_effort(
                 task, "triage_labels", self._scm.set_labels(task, add=add, remove=remove)
             )
-            body = render_triage_comment(task, issue, triage, now=self._clock())
+            body = render_triage_comment(
+                task, issue, triage, worktree_dirty=worktree_dirty, now=self._clock()
+            )
             await self._best_effort(
                 task,
                 "triage_comment",
@@ -274,6 +278,14 @@ class TriageOrchestrator:
             return (await self._scm.load_issue_context(task)).labels
         except Exception:  # noqa: BLE001 失败收尾时读不到标签就当作空
             return ()
+
+    async def _worktree_dirty(self, task: Task, workdir: Workdir) -> bool:
+        """巡检是否动过被跟踪文件；查不到就按"干净"处理，不影响任务结论。"""
+        try:
+            return await self._vcs.worktree_dirty(task, workdir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("巡检任务 %s 检查工作区脏改失败：%s", task.id, exc)
+            return False
 
     async def _ensure_labels(self, project_id: int) -> None:
         """幂等创建机器人自己的标签（颜色 + 描述）；失败不影响巡检结论。"""
