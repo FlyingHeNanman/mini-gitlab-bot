@@ -50,6 +50,13 @@ class LocalWorkspace:
         """读回 job 目录内的文件（如 agent 写的 `report.json`）。"""
         return await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
 
+    async def read_file(self, workdir: Workdir, relative_path: str) -> str | None:
+        """读 job 目录内的相对路径；不存在返回 None（CODEOWNERS 用）。"""
+        target = self._resolve_in_job(workdir.path, relative_path)
+        if not await asyncio.to_thread(target.is_file):
+            return None
+        return await asyncio.to_thread(target.read_text, encoding="utf-8")
+
     async def temp_dir(self, workdir: Workdir) -> str:
         path = Path(layout.temp_dir(workdir.path))
         await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)

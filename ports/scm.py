@@ -41,6 +41,10 @@ class SCM(Protocol):
         """创建一个标签；已存在时实现应当**静默成功**（幂等）。"""
         ...
 
+    async def find_user_id(self, username: str) -> int | None:
+        """按 username 查 GitLab 用户；不存在返回 None（指派用）。"""
+        ...
+
     # ---- 写 ----
 
     async def set_labels(
@@ -60,3 +64,15 @@ class SCM(Protocol):
         title: str,
         description: str,
     ) -> MergeRequestRef: ...
+
+    async def assign_issue(self, task: Task, user_id: int) -> None:
+        """把 issue 指派给某个 GitLab 用户（CODEOWNERS 解析用）。"""
+        ...
+
+    async def link_issue(self, task: Task, *, target_issue_iid: int) -> None:
+        """在 issue 与目标 issue 之间建立 `relates_to` 关联（重复判定用）。"""
+        ...
+
+    async def close_issue(self, task: Task) -> None:
+        """关闭 issue（高置信重复 / 非缺陷结论用）。"""
+        ...

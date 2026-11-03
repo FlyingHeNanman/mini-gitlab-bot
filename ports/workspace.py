@@ -20,6 +20,10 @@ class Workspace(Protocol):
         """写入工作目录内的文件，返回绝对路径。"""
         ...
 
+    async def read_file(self, workdir: Workdir, relative_path: str) -> str | None:
+        """读取工作目录内的文件；不存在返回 None（CODEOWNERS 读取用）。"""
+        ...
+
     async def temp_dir(self, workdir: Workdir) -> str:
         """返回（并确保存在）本 job 专属的临时目录。"""
         ...

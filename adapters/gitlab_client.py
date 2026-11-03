@@ -149,9 +149,48 @@ class GitLabSCM:
             draft=str(getattr(mr, "title", title)).startswith("Draft:"),
         )
 
+    async def find_user_id(self, username: str) -> int | None:
+        return await self._run("查询用户", self._find_user_id, username)
+
+    async def assign_issue(self, task: Task, user_id: int) -> None:
+        await self._run("指派 issue", self._assign_issue, task, user_id)
+
+    async def link_issue(self, task: Task, *, target_issue_iid: int) -> None:
+        await self._run("关联 issue", self._link_issue, task, target_issue_iid)
+
+    async def close_issue(self, task: Task) -> None:
+        await self._run("关闭 issue", self._close_issue, task)
+
     # ------------------------------------------------------------------ #
     # 同步实现（全部在 to_thread 里跑）
     # ------------------------------------------------------------------ #
+
+    def _find_user_id(self, username: str) -> int | None:
+        users = self.client.users.list(username=username, per_page=10)
+        for user in users:
+            if str(getattr(user, "username", "")) == username:
+                return int(user.id)
+        return None
+
+    def _assign_issue(self, task: Task, user_id: int) -> None:
+        issue = self._get_project(task.project.project_id).issues.get(task.issue_iid)
+        issue.assignee_ids = [int(user_id)]
+        issue.save()
+
+    def _link_issue(self, task: Task, target_issue_iid: int) -> None:
+        issue = self._get_project(task.project.project_id).issues.get(task.issue_iid)
+        issue.links.create(
+            {
+                "target_project_id": task.project.project_id,
+                "target_issue_iid": int(target_issue_iid),
+                "link_type": "relates_to",
+            }
+        )
+
+    def _close_issue(self, task: Task) -> None:
+        issue = self._get_project(task.project.project_id).issues.get(task.issue_iid)
+        issue.state_event = "close"
+        issue.save()
 
     def _get_project(self, project_id: int) -> Any:
         return self.client.projects.get(project_id)

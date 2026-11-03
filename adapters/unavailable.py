@@ -75,6 +75,18 @@ class UnavailableSCM:
     ) -> MergeRequestRef:
         self._boom()
 
+    async def find_user_id(self, username: str) -> int | None:
+        self._boom()
+
+    async def assign_issue(self, task: Task, user_id: int) -> None:
+        self._boom()
+
+    async def link_issue(self, task: Task, *, target_issue_iid: int) -> None:
+        self._boom()
+
+    async def close_issue(self, task: Task) -> None:
+        self._boom()
+
 
 class UnavailableVCS:
     """M2 前 git 操作的占位。"""
@@ -133,6 +145,9 @@ class UnavailableWorkspace:
         raise AdapterUnavailable("LocalWorkspace(Workspace)", self._milestone)
 
     async def write_text(self, workdir: Workdir, relative_path: str, text: str) -> str:
+        self._boom()
+
+    async def read_file(self, workdir: Workdir, relative_path: str) -> str | None:
         self._boom()
 
     async def temp_dir(self, workdir: Workdir) -> str:

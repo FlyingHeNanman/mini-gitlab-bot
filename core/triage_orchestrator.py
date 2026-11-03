@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 
 from core import labels, layout
 from core.autofix import AutofixConfig, AutofixDecision, adjudicate
+from core.codeowners import CODEOWNERS_PATHS, owners_for_files
 from core.label_sync import LabelEnsurer
 from core.models import (
     EnvReport,
@@ -31,6 +32,7 @@ from core.states import TaskKind, TaskState
 from core.triage import (
     TriageResult,
     TriageResultError,
+    TriageVerdict,
     label_plan,
     parse_triage_result,
     render_triage_comment,
@@ -64,6 +66,8 @@ class TriageOrchestrator:
         clock: Callable[[], datetime] = _utcnow,
         timeout_sec: float = 600.0,
         autofix: AutofixConfig | None = None,
+        duplicate_autoclose: bool = True,
+        duplicate_min_confidence: float = 0.8,
     ) -> None:
         self._store = store
         self._scm = scm
@@ -73,6 +77,8 @@ class TriageOrchestrator:
         self._env = env
         self._metrics = metrics
         self._autofix = autofix or AutofixConfig(enabled=False)
+        self._duplicate_autoclose = duplicate_autoclose
+        self._duplicate_min_confidence = duplicate_min_confidence
         self._clock = clock
         self._timeout_sec = timeout_sec
         self._labels = LabelEnsurer(scm)
@@ -93,6 +99,7 @@ class TriageOrchestrator:
 
             base_branch = await self._scm.default_branch(task.project)
             workdir = await self._vcs.prepare_workdir(task, base_branch=base_branch, branch=None)
+            codeowners_text = await self._read_codeowners(workdir)
 
             env_report: EnvReport = await self._env.prepare(task, workdir)
             if not env_report.ok:
@@ -153,17 +160,28 @@ class TriageOrchestrator:
             if decision.allowed:
                 scheduled, fix_task_id = await self._enqueue_fix(task, triage)
 
+            duplicate_target: int | None = None
+            duplicate_closed = False
+            if not scheduled:
+                duplicate_target, duplicate_closed = await self._close_duplicate(task, triage)
+
+            assigned_to: str | None = None
+            if not duplicate_closed:
+                assigned_to = await self._assign_owner(task, triage.files, codeowners_text)
+
             extra_add: list[str] = []
             if scheduled:
                 extra_add.append(labels.TRIGGER_LABEL)  # 界面一致；fix 开始后会移除
-            else:
+            elif not duplicate_closed:
                 extra_add.extend(decision.risk_labels)
-            add, remove = label_plan(
-                current_labels,
-                triage,
-                status=labels.STATUS_FIXING if scheduled else None,
-                extra_add=extra_add,
+            status = (
+                labels.STATUS_FIXING
+                if scheduled
+                else labels.STATUS_DUPLICATE
+                if duplicate_closed
+                else None
             )
+            add, remove = label_plan(current_labels, triage, status=status, extra_add=extra_add)
             task = self._store.transition(
                 task.id,
                 TaskState.FINALIZING,
@@ -181,6 +199,11 @@ class TriageOrchestrator:
                         "reason": decision.reason,
                         "fix_task_id": fix_task_id,
                     },
+                    "duplicate": {
+                        "target": duplicate_target,
+                        "closed": duplicate_closed,
+                    },
+                    "assigned_to": assigned_to,
                     "repro": {
                         "command": triage.repro_command,
                         "result": triage.repro_result,
@@ -196,6 +219,8 @@ class TriageOrchestrator:
                 triage,
                 worktree_dirty=worktree_dirty,
                 autofix=scheduled,
+                duplicate_of=duplicate_target if duplicate_closed else None,
+                assigned_to=assigned_to,
                 now=self._clock(),
             )
             await self._best_effort(
@@ -350,6 +375,55 @@ class TriageOrchestrator:
             logger.warning("巡检任务 %s 派生 fix 未创建：%s", task.id, outcome.reason)
             return False, None
         return True, outcome.task.id
+
+    async def _close_duplicate(self, task: Task, triage: TriageResult) -> tuple[int | None, bool]:
+        """高置信重复：建立 issue 关联并关闭；失败则退回人工处理。"""
+        if not self._duplicate_autoclose or triage.verdict is not TriageVerdict.DUPLICATE:
+            return triage.duplicate_target, False
+        target = triage.duplicate_target
+        if target is None or target == task.issue_iid:
+            return target, False
+        if triage.confidence < self._duplicate_min_confidence:
+            return target, False
+        try:
+            await self._scm.link_issue(task, target_issue_iid=target)
+            await self._scm.close_issue(task)
+        except Exception as exc:  # noqa: BLE001 关闭失败不能拖垮巡检
+            logger.warning("巡检任务 %s 自动关闭重复失败：%s", task.id, exc)
+            return target, False
+        return target, True
+
+    async def _read_codeowners(self, workdir: Workdir) -> str:
+        for name in CODEOWNERS_PATHS:
+            try:
+                text = await self._workspace.read_file(workdir, name)
+            except Exception as exc:  # noqa: BLE001 读不到就当没有 CODEOWNERS
+                logger.warning("读取 %s 失败：%s", name, exc)
+                continue
+            if text:
+                return text
+        return ""
+
+    async def _assign_owner(
+        self, task: Task, files: tuple[str, ...], codeowners_text: str
+    ) -> str | None:
+        if not codeowners_text or not files:
+            return None
+        try:
+            owners = owners_for_files(files, codeowners_text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("解析 CODEOWNERS 失败：%s", exc)
+            return None
+        for username in owners:
+            try:
+                user_id = await self._scm.find_user_id(username)
+                if user_id is None:
+                    continue
+                await self._scm.assign_issue(task, user_id)
+                return username
+            except Exception as exc:  # noqa: BLE001 指派失败不影响结论
+                logger.warning("指派 @%s 失败：%s", username, exc)
+        return None
 
     async def _set_status(self, task: Task, current: tuple[str, ...], status: str) -> None:
         remove = labels.exclusive_removals(current, keep=status)

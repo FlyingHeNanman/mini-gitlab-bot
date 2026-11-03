@@ -63,6 +63,7 @@ class FakeSCM:
         issue_body: str = "复现：给一个没有任何标签的 issue 调用 parse_labels()",
         comments: Sequence[str] = ("我也遇到了这个问题",),
         access_levels: dict[int, int] | None = None,
+        user_ids: dict[str, int] | None = None,
         project_labels: Sequence[str] = (),
         fail_on: Sequence[str] = (),
     ) -> None:
@@ -73,6 +74,7 @@ class FakeSCM:
         self.issue_body = issue_body
         self.issue_comments = tuple(comments)
         self.access_levels = dict(access_levels or {})
+        self.user_ids = dict(user_ids or {})
         self.fail_on = set(fail_on)
 
         # 记录
@@ -83,6 +85,9 @@ class FakeSCM:
         self.mr_descriptions: list[str] = []
         self.merge_requests: list[MergeRequestRef] = []
         self.issue_loads: list[str] = []
+        self.assignments: list[tuple[str, int]] = []
+        self.linked_issues: list[tuple[str, int]] = []
+        self.closed_issues: set[str] = set()
 
     # ---- 内部 ----
 
@@ -124,6 +129,10 @@ class FakeSCM:
         self._maybe_fail("create_label")
         self.project_labels.add(name)
         self.created_labels.append({"name": name, "color": color, "description": description})
+
+    async def find_user_id(self, username: str) -> int | None:
+        self._maybe_fail("find_user_id")
+        return self.user_ids.get(username)
 
     # ---- 写 ----
 
@@ -167,6 +176,18 @@ class FakeSCM:
         self.merge_requests.append(mr)
         self.mr_descriptions.append(description)
         return mr
+
+    async def assign_issue(self, task: Task, user_id: int) -> None:
+        self._maybe_fail("assign_issue")
+        self.assignments.append((task.id, user_id))
+
+    async def link_issue(self, task: Task, *, target_issue_iid: int) -> None:
+        self._maybe_fail("link_issue")
+        self.linked_issues.append((task.id, target_issue_iid))
+
+    async def close_issue(self, task: Task) -> None:
+        self._maybe_fail("close_issue")
+        self.closed_issues.add(task.id)
 
 
 @dataclass
@@ -240,8 +261,9 @@ class FakeAgent:
 
 
 class FakeWorkspace:
-    def __init__(self) -> None:
+    def __init__(self, files: dict[str, str] | None = None) -> None:
         self.written: dict[str, str] = {}
+        self.files: dict[str, str] = dict(files or {})
         self.removed: list[str] = []
         self.temp_dirs: list[str] = []
 
@@ -249,6 +271,12 @@ class FakeWorkspace:
         path = f"{workdir.path}/{relative_path}"
         self.written[path] = text
         return path
+
+    async def read_file(self, workdir: Workdir, relative_path: str) -> str | None:
+        path = f"{workdir.path}/{relative_path}"
+        if path in self.files:
+            return self.files[path]
+        return self.written.get(path)
 
     async def temp_dir(self, workdir: Workdir) -> str:
         path = workdir.temp_dir

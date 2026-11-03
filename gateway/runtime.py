@@ -145,6 +145,8 @@ def build_runtime(
             min_access_level=settings.autofix_min_access_level,
             forbidden_paths=tuple(settings.forbidden_paths),
         ),
+        duplicate_autoclose=settings.duplicate_autoclose_enabled,
+        duplicate_min_confidence=settings.duplicate_min_confidence,
     )
     router = KindRouter({TaskKind.FIX: orchestrator, TaskKind.TRIAGE: triage})
 

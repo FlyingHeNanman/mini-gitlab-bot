@@ -263,3 +263,77 @@ async def test_oversized_triage_does_not_enqueue_fix(make_runtime, clock: Clock)
     assert not [t for t in h.runtime.store.list_tasks() if t.kind is TaskKind.FIX]
     assert labels.STATUS_NEEDS_HUMAN in h.scm.current_labels
     assert labels.RISK_LARGE_DIFF in h.scm.current_labels
+
+
+@pytest.mark.asyncio
+async def test_high_confidence_duplicate_is_linked_and_closed(make_runtime, clock: Clock) -> None:
+    report = {
+        **REPORT,
+        "verdict": "duplicate",
+        "confidence": 0.9,
+        "similar": [{"iid": 7, "relation": "duplicate", "reason": "同一个空标签问题"}],
+    }
+    h = build(
+        make_runtime,
+        clock,
+        agent=FakeAgent(result=default_agent_result(report=report)),
+    )
+    task, handled = await h.run_triage()
+    assert handled == 1
+    assert task.state is TaskState.SUCCEEDED
+    assert task.payload["duplicate"] == {"target": 7, "closed": True}
+    assert h.scm.linked_issues == [(task.id, 7)]
+    assert task.id in h.scm.closed_issues
+    assert labels.STATUS_DUPLICATE in h.scm.current_labels
+    body = next(c["body"] for c in h.scm.comments if c["marker"] == triage_marker(12))
+    assert "已关联为 #7 的重复并关闭" in body
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_duplicate_is_not_closed(make_runtime, clock: Clock) -> None:
+    report = {
+        **REPORT,
+        "verdict": "duplicate",
+        "confidence": 0.5,
+        "similar": [{"iid": 7, "relation": "duplicate", "reason": "可能重复"}],
+    }
+    h = build(
+        make_runtime,
+        clock,
+        agent=FakeAgent(result=default_agent_result(report=report)),
+    )
+    task, _ = await h.run_triage()
+    assert task.payload["duplicate"] == {"target": 7, "closed": False}
+    assert h.scm.linked_issues == []
+    assert h.scm.closed_issues == set()
+    assert labels.STATUS_NEEDS_HUMAN in h.scm.current_labels
+
+
+@pytest.mark.asyncio
+async def test_codeowners_assigns_issue_owner(make_runtime, clock: Clock) -> None:
+    scm = FakeSCM(
+        access_levels={ALICE_ID: 30},
+        user_ids={"alice": ALICE_ID},
+        labels=(TRIGGER_LABEL,),
+        project_labels=(),
+    )
+    workspace = FakeWorkspace()
+    runtime, _ = make_runtime(
+        scm=scm,
+        workspace=workspace,
+        agent=FakeAgent(result=default_agent_result(report=REPORT)),
+        with_worker=False,
+    )
+    outcome = runtime.store.enqueue(make_trigger(kind=TriggerKind.ISSUE_OPEN), now=clock())
+    assert outcome.task is not None
+    claimed = runtime.store.claim_next(
+        owner="w", now=clock(), lease_seconds=60, kinds=[TaskKind.TRIAGE]
+    )
+    workspace.files[f"/tmp/fake-jobs/{claimed.id}/CODEOWNERS"] = "gateway/config.py @alice\n"
+
+    task = await runtime.triage_orchestrator.process(claimed)
+    assert task.state is TaskState.SUCCEEDED
+    assert task.payload["assigned_to"] == "alice"
+    assert scm.assignments == [(task.id, ALICE_ID)]
+    body = next(c["body"] for c in scm.comments if c["marker"] == triage_marker(12))
+    assert "已按 CODEOWNERS 指派给 @alice" in body

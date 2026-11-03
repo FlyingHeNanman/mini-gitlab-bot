@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     autofix_min_confidence: float = 0.7
     #: 0 = 不检查权限；任何能提 issue 的账号都可触发自动修
     autofix_min_access_level: int = 0
+    #: 高置信重复自动关联并关闭
+    duplicate_autoclose_enabled: bool = True
+    duplicate_min_confidence: float = 0.8
     bot_username: str = ""
     allowed_trigger_users: CsvList = Field(default_factory=list)
     min_access_level: int = 30  # Developer（PLAN §7 加固基线 8）

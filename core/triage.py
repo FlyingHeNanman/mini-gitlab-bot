@@ -73,6 +73,14 @@ class TriageResult:
         return common_component(self.files)
 
     @property
+    def duplicate_target(self) -> int | None:
+        """模型给出的重复目标（只认 relation=duplicate 的第一条）。"""
+        for iid, relation, _ in self.similar:
+            if relation == "duplicate":
+                return iid
+        return None
+
+    @property
     def status_label(self) -> str:
         return (
             labels.STATUS_NEEDS_INFO
@@ -249,6 +257,8 @@ def render_triage_comment(
     *,
     worktree_dirty: bool = False,
     autofix: bool = False,
+    duplicate_of: int | None = None,
+    assigned_to: str | None = None,
     now: datetime | None = None,
 ) -> str:
     now = now or datetime.now(UTC)
@@ -299,6 +309,13 @@ def render_triage_comment(
             "",
             "> ✅ 已自动排入修复任务（改动小、置信度高）；产出 draft MR，合并仍需人工审批。",
         ]
+    if duplicate_of is not None:
+        parts += [
+            "",
+            f"> 🔗 已关联为 #{duplicate_of} 的重复并关闭本 issue。",
+        ]
+    if assigned_to is not None:
+        parts += ["", f"> 👤 已按 CODEOWNERS 指派给 @{assigned_to}。"]
     if worktree_dirty:
         parts += [
             "",

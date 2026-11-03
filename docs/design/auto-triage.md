@@ -483,7 +483,7 @@ def group_of(name: str) -> str | None:
 | `AUTOFIX_MIN_ACCESS_LEVEL` | 触发自动修的最低 GitLab 权限；**0 = 不检查，任何能提 issue 的账号都可** | `0` |
 | `TRIAGE_QUOTA_PER_HOUR` | 每项目每小时最多跑多少个 triage；`0` = 不限 | `20` |
 | `TRIAGE_CONCURRENCY` / `EXPLAIN_CONCURRENCY` / `FIX_CONCURRENCY` | 分 kind 并发 | `1 / 1 / 2` |
-| `DUPLICATE_AUTOCLOSE` | 重复自动关闭 | `true` |
+| `DUPLICATE_AUTOCLOSE_ENABLED` | 重复自动关闭 | `true` |
 | `DUPLICATE_MIN_CONFIDENCE` | 自动关闭置信下限 | `0.8` |
 
 **关于 `AUTOFIX_MIN_ACCESS_LEVEL`（GitLab 角色等级）**
@@ -506,8 +506,8 @@ def group_of(name: str) -> str | None:
 
 | 里程碑 | 内容 | 判据 |
 | --- | --- | --- |
-| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 562 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
-| **M7 自动修 + 指派** | 裁决、内部 enqueue、组件映射（CODEOWNERS / 顶层目录） | 自动修已落地并真机验证（draft MR）；CODEOWNERS/指派、重复关闭待做 |
+| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 570 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
+| **M7 自动修 + 指派** | 裁决、内部 enqueue、组件映射（CODEOWNERS / 顶层目录） | 自动修真机验证（draft MR）；CODEOWNERS 指派、重复关闭已落地（假件） |
 | **M8 解释响应** | merge 事件、diff 读取、解释评论、标签流转 | bot MR 与人工 MR 各跑通一次 |
 | **M9（可选）** | 真验证（复跑 repro / 回归测试）＋ fix 迁到 Runner | 446 项测试等价迁移；真实验证一次通过、一次失败 |
 
