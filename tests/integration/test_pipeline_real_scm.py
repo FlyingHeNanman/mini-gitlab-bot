@@ -15,6 +15,7 @@ from httpx import ASGITransport
 from adapters.fakes import FakeAgent, FakeEnvPreparer, FakeVCS, FakeWorkspace
 from adapters.gitlab_client import GitLabSCM, GitLabSettings
 from adapters.sqlite_store import SqliteStore
+from core.labels import STATUS_FAILED, STATUS_FIXING, STATUS_REVIEW, TRIGGER_LABEL
 from core.models import AgentResult
 from core.states import TaskState
 from gateway.app import create_app
@@ -32,7 +33,7 @@ WEBHOOK = "/webhook/gitlab"
 def stub():
     with StubGitLab() as server:
         server.state.members[ALICE_ID] = 30
-        server.state.add_issue(ISSUE, labels=["ai-fix"])
+        server.state.add_issue(ISSUE, labels=[TRIGGER_LABEL])
         yield server
 
 
@@ -106,9 +107,9 @@ async def test_success_creates_draft_mr_and_edits_one_comment(make, clock, stub)
     notes = stub.state.notes[ISSUE]
     assert len(notes) == 1
     body = notes[0]["body"]
-    assert "ai-fix" in body and "已完成" in body
-    # --- 标签流转：ai-fix → ai-fix:running → ai-fix:done ---
-    assert stub.state.issues[ISSUE]["labels"] == ["ai-fix:done"]
+    assert "已完成" in body
+    # --- 标签流转：机器人：修复 → 状态：自动修复中 → 状态：待审批 ---
+    assert stub.state.issues[ISSUE]["labels"] == [STATUS_REVIEW]
 
 
 async def test_success_sends_labels_via_add_remove(make, clock, stub) -> None:
@@ -119,10 +120,10 @@ async def test_success_sends_labels_via_add_remove(make, clock, stub) -> None:
         for item in stub.state.requests
         if item["method"] == "PUT" and item["body"].get("add_labels")
     ]
-    assert updates[0]["add_labels"] == "ai-fix:running"
-    assert updates[0]["remove_labels"] == "ai-fix"
-    assert updates[-1]["add_labels"] == "ai-fix:done"
-    assert "ai-fix:running" in updates[-1]["remove_labels"]
+    assert updates[0]["add_labels"] == STATUS_FIXING
+    assert updates[0]["remove_labels"] == TRIGGER_LABEL
+    assert updates[-1]["add_labels"] == STATUS_REVIEW
+    assert STATUS_FIXING in updates[-1]["remove_labels"]
 
 
 async def test_success_never_deletes_the_source_branch(make, clock, stub) -> None:
@@ -159,7 +160,7 @@ async def test_agent_failure_marks_issue_and_skips_mr(make, clock, stub) -> None
     assert len(notes) == 1
     assert "失败" in notes[0]["body"]
     assert "疑似被中断" in notes[0]["body"]
-    assert stub.state.issues[ISSUE]["labels"] == ["ai-fix:failed"]
+    assert stub.state.issues[ISSUE]["labels"] == [STATUS_FAILED]
 
 
 # --------------------------------------------------------------------------- #

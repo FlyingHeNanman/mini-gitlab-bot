@@ -180,7 +180,7 @@ def render_failed(
     lines += [
         "",
         "**如何重试**",
-        "- 重新打一次 `ai-fix` 标签，或评论 `/ai-fix retry`",
+        "- 重新打一次 `机器人：修复` 标签，或评论 `/fix retry`",
         f"- 若需人工接管：{_takeover_hint(task)}",
         "",
         _meta_line(task, now=now),
@@ -243,7 +243,7 @@ def render_mr_description(
             f"Closes #{task.issue_iid}",
             "",
             f"由 `mini-gitlab-bot` 自动生成（draft，需人工审批）。"
-            f"触发：@{task.trigger_actor} 于 {_ymd_hm(task.created_at)} 打上 `ai-fix` 标签。",
+            f"触发：@{task.trigger_actor} 于 {_ymd_hm(task.created_at)} 打上 `机器人：修复` 标签。",
             f"任务：`{task.id}`",
             *summary_block,
             "",

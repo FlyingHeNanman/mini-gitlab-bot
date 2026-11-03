@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.labels import TRIGGER_LABEL
+
 PROJECT_PATH = "group/project-a"
 PROJECT_ID = 42
 
@@ -19,7 +21,7 @@ def issue_payload(
     iid: int = 12,
     state: str = "opened",
     previous: tuple[str, ...] = (),
-    current: tuple[str, ...] = ("ai-fix",),
+    current: tuple[str, ...] = (TRIGGER_LABEL,),
     change_labels: bool = True,
     user_id: int | None = 7,
     username: str = "alice",
@@ -50,7 +52,7 @@ def issue_payload(
 
 def note_payload(
     *,
-    note: str = "/ai-fix",
+    note: str = "/fix",
     system: bool = False,
     noteable_type: str = "Issue",
     iid: int = 13,

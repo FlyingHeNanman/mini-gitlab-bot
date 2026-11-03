@@ -7,6 +7,7 @@ import pytest
 from httpx import ASGITransport
 
 from adapters.fakes import FakeAgent, FakeSCM, default_agent_result
+from core.labels import TRIAGE_LABEL, TRIGGER_LABEL
 from core.models import TriggerKind
 from core.states import TaskKind, TaskState
 from gateway.app import create_app
@@ -79,7 +80,7 @@ async def test_comment_command_is_queued(make_runtime, settings) -> None:
     runtime, _ = make_runtime()
     app = create_app(settings=settings, runtime=runtime)
     response = await post(
-        app, note_payload(note="/ai-fix retry"), headers(event="Note Hook", delivery="d-note")
+        app, note_payload(note="/fix retry"), headers(event="Note Hook", delivery="d-note")
     )
     assert response.json()["status"] == "queued"
     task = runtime.store.list_tasks()[0]
@@ -106,8 +107,11 @@ async def test_duplicate_delivery_is_answered_but_not_requeued(make_runtime, set
     ("payload", "hdrs", "reason"),
     [
         (issue_payload(path="other/repo"), headers(), "project_not_whitelisted"),
-        (issue_payload(previous=("ai-fix",), current=()), headers(), "ai_fix_label_not_added"),
-        (issue_payload(action="open", change_labels=False), headers(), "triage_disabled"),
+        (
+            issue_payload(previous=(TRIGGER_LABEL,), current=()),
+            headers(),
+            "bot_label_not_added",
+        ),
         (
             note_payload(note="added ~ai-fix label", system=True),
             headers(event="Note Hook", delivery="sys-1"),
@@ -124,6 +128,15 @@ async def test_ignored_events_still_return_200(
     response = await post(app, payload, hdrs)
     assert response.status_code == 200
     assert response.json() == {"status": "ignored", "reason": reason}
+    assert runtime.store.count() == 0
+
+
+async def test_open_issue_ignored_when_triage_disabled(make_runtime, settings) -> None:
+    runtime, _ = make_runtime()
+    disabled = settings.model_copy(update={"triage_enabled": False})
+    app = create_app(settings=disabled, runtime=runtime)
+    response = await post(app, issue_payload(action="open", change_labels=False), headers())
+    assert response.json() == {"status": "ignored", "reason": "triage_disabled"}
     assert runtime.store.count() == 0
 
 
@@ -250,3 +263,42 @@ async def test_open_issue_full_triage_flow(make_runtime, settings) -> None:
     assert "类型：缺陷" in scm.current_labels
     assert "组件：gateway" in scm.current_labels
     assert any("自动巡检结论" in c["body"] for c in scm.comments)
+
+
+async def test_triage_label_queues_triage_task(make_runtime, settings) -> None:
+    runtime, _ = make_runtime()
+    app = create_app(settings=settings, runtime=runtime)
+    response = await post(
+        app,
+        issue_payload(previous=(), current=(TRIAGE_LABEL,)),
+        headers(delivery="tri-label-1"),
+    )
+    body = response.json()
+    assert body["status"] == "queued"
+    task = runtime.store.get(body["task_id"])
+    assert task.kind is TaskKind.TRIAGE
+    assert task.command == "triage"
+
+
+async def test_triage_label_respects_permission_gate(make_runtime, settings) -> None:
+    runtime, _ = make_runtime(scm=FakeSCM(access_levels={7: 20}))
+    app = create_app(settings=settings, runtime=runtime)
+    response = await post(
+        app,
+        issue_payload(previous=(), current=(TRIAGE_LABEL,)),
+        headers(delivery="tri-label-2"),
+    )
+    assert response.json()["reason"] == "permission_denied:insufficient_access_level(20<30)"
+    assert runtime.store.count() == 0
+
+
+async def test_comment_triage_command_is_queued(make_runtime, settings) -> None:
+    runtime, _ = make_runtime()
+    app = create_app(settings=settings, runtime=runtime)
+    response = await post(
+        app, note_payload(note="/triage"), headers(event="Note Hook", delivery="d-triage")
+    )
+    assert response.json()["status"] == "queued"
+    task = runtime.store.list_tasks()[0]
+    assert task.kind is TaskKind.TRIAGE
+    assert task.command == "triage"

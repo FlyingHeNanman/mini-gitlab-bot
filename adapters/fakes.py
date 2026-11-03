@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from adapters.proc import CompletedProcess
+from core.labels import TRIGGER_LABEL
 from core.models import (
     AgentResult,
     DiffSummary,
@@ -57,7 +58,7 @@ class FakeSCM:
         self,
         *,
         default_branch: str = "main",
-        labels: Sequence[str] = ("ai-fix",),
+        labels: Sequence[str] = (TRIGGER_LABEL,),
         issue_title: str = "parse_labels 在空标签时返回 None",
         issue_body: str = "复现：给一个没有任何标签的 issue 调用 parse_labels()",
         comments: Sequence[str] = ("我也遇到了这个问题",),

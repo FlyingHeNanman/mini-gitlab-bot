@@ -5,7 +5,7 @@
 <h1 align="center">mini-gitlab-bot</h1>
 
 <p align="center">
-  给 GitLab Issue 打上 <code>ai-fix</code> 标签，机器人自动修复并开一个 <b>draft MR</b>。<br>
+  新 issue 自动巡检、打中文标签；打上 <code>机器人：修复</code> 后自动修复并开 <b>draft MR</b>。<br>
   Codex CLI 做 AI 内核，Python 网关做触发器 / 上下文准备 / 收尾编排。
 </p>
 
@@ -31,9 +31,9 @@
 
 内网 GitLab 上，一个 issue 从"有人报"到"有人改"经常要排很久。这个机器人把中间那段自动化：
 
-> **打标签 → 拉代码 → 装依赖 → AI 改代码 → 跑测试 → 推分支 → 开 draft MR → 回帖告诉你结果**
+> **新 issue 自动巡检 → 打类型/严重度/组件标签 → 人工打 `机器人：修复` → 拉代码 → 装依赖 → AI 改代码 → 跑测试 → 推分支 → 开 draft MR → 回帖告诉你结果**
 
-合并永远由人决定。机器人的产出只有两样：一个 **draft MR**，和 issue 上一条**持续更新**的状态评论。
+合并永远由人决定。机器人的产出是 issue 上的**巡检结论 + 状态评论**，以及（人工确认后）一个 **draft MR**。
 
 ## 一次完整的闭环
 
@@ -41,7 +41,11 @@
 
 ```text
 issue #8  「parse_labels 在空标签时返回 None」
-  └─ alice 打上 ai-fix 标签
+  └─ alice 新开 issue（自动巡检，无需打标签）
+       ├─ 只读 clone → 真跑 pytest 复现 → 定位 app.py
+       ├─ 打上 类型：缺陷 / 严重度：一般 / 组件：其他 / 状态：待人工处理
+       └─ 回帖：结论 + 复现证据 + 定位文件
+  └─ alice 再打上 `机器人：修复` 标签（人工确认）
        ├─ 权限闸门：alice 是 Developer(30) ✓
        ├─ 准备环境：uv sync（网关侧联网）→ 离线自检 ✓
        ├─ Codex 沙箱：无网络、无凭据，读 context.md → 改 app.py
@@ -49,27 +53,27 @@ issue #8  「parse_labels 在空标签时返回 None」
        ├─ 四条件 + diff 校验 ✓ → push 分支 ai-fix/8-…
        ├─ 开 draft MR：「Draft: fix(issue-8): parse_labels 在空标签时返回 None」
        │    描述里有 Closes #8、agent 的 report.json 摘要、验证命令与结果
-       └─ issue 上贴状态评论，标签流转 ai-fix → ai-fix:done
+       └─ issue 上贴状态评论，标签流转 状态：自动修复中 → 状态：待审批
 ```
 
-失败也会说话：`ai-fix:failed` + 一条带**失败阶段、原因、日志尾部**的评论，而不是静默消失。
+失败也会说话：`状态：处理失败` + 一条带**失败阶段、原因、日志尾部**的评论，而不是静默消失。
 
 ## 工作流
 
 ```mermaid
 flowchart LR
-    A["Issue 打上 ai-fix<br/>或评论 /ai-fix"] --> B["Webhook 网关"]
-    B --> C{"权限闸门<br/>access_level ≥ 30"}
+    A["新 issue 自动巡检<br/>或打 机器人：修复 / 评论 /fix"] --> B["Webhook 网关"]
+    B --> C{"人工命令过权限闸门<br/>access_level ≥ 30"}
     C -- 拒绝 --> X["忽略并记录"]
     C -- 通过 --> D[("SQLite 持久队列")]
     D --> E["准备环境<br/>uv sync（联网）"]
     E --> F["Codex 沙箱<br/>无网络 / 无凭据"]
     F -. 按需取上下文 .-> M[("只读 MCP<br/>11 个工具")]
     F --> G{"四条件 + diff 校验"}
-    G -- 不通过 --> H["失败收尾<br/>评论 + ai-fix:failed"]
+    G -- 不通过 --> H["失败收尾<br/>评论 + 状态：处理失败"]
     G -- 通过 --> I["push 分支"]
     I --> J["开 draft MR"]
-    J --> K["状态评论 + ai-fix:done"]
+    J --> K["状态评论 + 状态：待审批"]
 ```
 
 ## 为什么不是"把 issue 直接丢给 AI"
@@ -109,12 +113,25 @@ docker compose up -d
 | --- | --- |
 | 机器人账号 | 建一个专用账号（如 `gitlab-bot`），角色 **Developer**，不要给 Maintainer/Owner |
 | 两个 Token | 主 token：`api`；只读 token：`read_api`（给 MCP 用，物理上不能写） |
-| 四个标签 | `ai-fix`、`ai-fix:running`、`ai-fix:done`、`ai-fix:failed` |
+| 标签 | 不需要手工建：机器人第一次干活时自动创建 31 个中文标签（类型/严重度/组件/状态/证据/风险/命令） |
 | Webhook | Settings → Webhooks → `http://<bot 容器>:8080/webhook/gitlab`，Secret 与 `WEBHOOK_SECRET` 一致，勾 **Issues events**（用评论命令再加 **Comments**） |
 
 ### 3. 触发
 
-在任意 issue 上打 `ai-fix` 标签，或评论 `/ai-fix`。之后去 issue 看状态评论，或去看 draft MR。
+- **自动巡检**：新开 / 重开 issue 即触发（`TRIAGE_ENABLED=true`，默认开）；
+- **修复**：在 issue 上打 `机器人：修复` 标签，或评论 `/fix`；
+- **重跑巡检**：打 `机器人：巡检` 标签，或评论 `/triage`（人工命令需 Developer=30）；
+- **跳过**：打 `机器人：跳过` 标签，机器人不再自动巡检该 issue。
+
+旧标签（`ai-fix*`）已硬切；从旧版本升级时跑一次：
+
+```bash
+export GITLAB_URL=https://gitlab.example.com GITLAB_TOKEN=glpat-xxx
+python scripts/migrate_labels.py --project group/project-a            # 预演
+python scripts/migrate_labels.py --project group/project-a --apply    # 执行
+```
+
+之后去 issue 看巡检/状态评论，或去看 draft MR。
 
 ## 可观测性
 
@@ -183,7 +200,7 @@ docker compose up -d
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 535 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 547 项，无需 GitLab / 无需 LLM
 ```
 
 测试分层：
@@ -225,7 +242,7 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 535 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 547 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
 | 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
 | 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |

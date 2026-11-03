@@ -177,3 +177,12 @@ def test_legacy_database_is_migrated_in_place(tmp_path) -> None:
     assert not second.created
     assert second.reason == "active_task_exists"
     store.close()
+
+
+def test_command_triage_infers_triage_kind(store: SqliteStore, clock: Clock) -> None:
+    outcome = store.enqueue(
+        make_trigger(delivery_key="d-triage-cmd", kind=TriggerKind.COMMENT, command="triage"),
+        now=clock(),
+    )
+    assert outcome.created and outcome.task is not None
+    assert outcome.task.kind is TaskKind.TRIAGE

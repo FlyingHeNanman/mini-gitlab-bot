@@ -137,6 +137,8 @@ def _infer_kind(trigger: Trigger) -> TaskKind:
         return TaskKind.TRIAGE
     if trigger.kind is TriggerKind.MERGE:
         return TaskKind.EXPLAIN
+    if trigger.command == "triage":
+        return TaskKind.TRIAGE
     return TaskKind.FIX
 
 

@@ -15,6 +15,7 @@ from typing import Annotated
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from core.labels import TRIGGER_LABEL
 from core.policy import DEFAULT_FORBIDDEN_PATHS
 
 #: 逗号分隔的列表字段。必须加 `NoDecode`：否则 pydantic-settings 会先按 JSON 解析
@@ -40,9 +41,9 @@ class Settings(BaseSettings):
 
     # ---------- 触发闸门 ----------
     repo_whitelist: CsvList = Field(default_factory=list)
-    ai_fix_label: str = "ai-fix"
-    #: 新 issue 自动巡检总开关（M6 目前只完成了入队与标签契约，执行器落地后再默认开）
-    triage_enabled: bool = False
+    ai_fix_label: str = TRIGGER_LABEL
+    #: 新 issue 自动巡检总开关；真机验证通过后默认开启
+    triage_enabled: bool = True
     bot_username: str = ""
     allowed_trigger_users: CsvList = Field(default_factory=list)
     min_access_level: int = 30  # Developer（PLAN §7 加固基线 8）

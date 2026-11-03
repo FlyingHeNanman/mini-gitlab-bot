@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from core.labels import TRIGGER_LABEL
 from gateway.config import Settings
 
 ENV_NAMES = (
@@ -68,7 +69,8 @@ def test_scalar_env_is_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_defaults_are_the_decided_ones() -> None:
     settings = Settings()
-    assert settings.ai_fix_label == "ai-fix"
+    assert settings.ai_fix_label == TRIGGER_LABEL
+    assert settings.triage_enabled is True
     assert settings.min_access_level == 30  # Developer
     assert settings.member_cache_ttl_sec == 60
     assert settings.max_attempts == 3

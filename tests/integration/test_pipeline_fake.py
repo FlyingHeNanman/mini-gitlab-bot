@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from adapters.fakes import FakeAgent, FakeSCM, FakeVCS, default_agent_result
+from core.labels import STATUS_FAILED, STATUS_FIXING, STATUS_REVIEW, TRIGGER_LABEL
 from core.models import DiffSummary
 from core.states import TaskState
 from tests.helpers import make_trigger
@@ -62,10 +63,10 @@ async def test_happy_path_flows_labels_and_updates_single_comment(harness) -> No
     assert task.state is TaskState.SUCCEEDED
 
     assert harness.scm.label_changes == [
-        (("ai-fix:running",), ("ai-fix",)),
-        (("ai-fix:done",), ("ai-fix:running", "ai-fix")),
+        ((STATUS_FIXING,), (TRIGGER_LABEL,)),
+        ((STATUS_REVIEW,), (STATUS_FIXING, TRIGGER_LABEL)),
     ]
-    assert harness.scm.current_labels == {"ai-fix:done"}
+    assert harness.scm.current_labels == {STATUS_REVIEW}
 
     # 状态评论只有一条，且被原地编辑（不是每次新开一条）
     assert len(harness.scm.comments) == 1
@@ -122,7 +123,7 @@ async def test_agent_nonzero_exit_fails_with_fixed_wording(make_runtime, clock) 
     assert task.failure_reason == "codex 退出码 1，未产生 turn.completed 事件"
     assert "exit_code=1" in (task.failure_evidence or "")
     assert scm.merge_requests == []
-    assert scm.current_labels == {"ai-fix:failed"}
+    assert scm.current_labels == {STATUS_FAILED}
     assert "失败" in scm.comments[0]["body"]
     assert "如何重试" in scm.comments[0]["body"]
 

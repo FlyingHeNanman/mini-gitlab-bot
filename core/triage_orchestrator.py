@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from core import labels, layout
+from core.label_sync import LabelEnsurer
 from core.models import EnvReport, IssueContext, Task, Workdir
 from core.policy import describe_agent_failure
 from core.states import TaskState
@@ -62,7 +63,7 @@ class TriageOrchestrator:
         self._metrics = metrics
         self._clock = clock
         self._timeout_sec = timeout_sec
-        self._labels_ready: set[int] = set()
+        self._labels = LabelEnsurer(scm)
 
     # ------------------------------------------------------------------ #
     # 主流程
@@ -289,18 +290,8 @@ class TriageOrchestrator:
 
     async def _ensure_labels(self, project_id: int) -> None:
         """幂等创建机器人自己的标签（颜色 + 描述）；失败不影响巡检结论。"""
-        if project_id in self._labels_ready:
-            return
         try:
-            existing = await self._scm.list_labels(project_id)
-            for label in labels.missing_labels(existing):
-                await self._scm.create_label(
-                    project_id,
-                    name=label.name,
-                    color=label.color,
-                    description=label.description,
-                )
-            self._labels_ready.add(project_id)
+            await self._labels.ensure(project_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("创建机器人标签失败（不影响巡检）：%s", exc)
 

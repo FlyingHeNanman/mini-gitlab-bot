@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from core.labels import SKIP_LABEL
+from core.labels import SKIP_LABEL, TRIAGE_LABEL
 from core.models import ProjectRef, Trigger, TriggerActor, TriggerKind
 
 #: 投递幂等键候选请求头（按优先级）
@@ -151,9 +152,17 @@ def _parse_issue(payload: Mapping[str, Any], settings, key: str, event_type: str
 
     current = _label_titles(label_change.get("current"))
     previous = _label_titles(label_change.get("previous"))
-    label = settings.ai_fix_label
-    if label not in (current - previous):
-        return _ignored("ai_fix_label_not_added", key, event_type)
+    added = current - previous
+    if SKIP_LABEL in added:
+        return _ignored("bot_skipped", key, event_type)
+
+    # 两个指令标签：修复 / 巡检。巡检标签是人工补跑（新 issue 默认自动跑）。
+    if settings.ai_fix_label in added:
+        command: str | None = None
+    elif TRIAGE_LABEL in added:
+        command = "triage"
+    else:
+        return _ignored("bot_label_not_added", key, event_type)
 
     state = attrs.get("state")
     if state is not None and state not in ISSUE_OPEN_STATES:
@@ -177,6 +186,7 @@ def _parse_issue(payload: Mapping[str, Any], settings, key: str, event_type: str
             issue_iid=issue_iid,
             actor=context["actor"],
             delivery_key=key,
+            command=command,
             issue_labels=tuple(sorted(current)),
             source=str(attrs.get("url") or ""),
         ),
@@ -219,13 +229,24 @@ def _parse_issue_opened(
     )
 
 
-def parse_command(text: str, label: str) -> str | None:
-    """把评论正文解析成命令：`/ai-fix` → `run`，`/ai-fix retry` → `retry`。"""
+_COMMAND_RE = re.compile(r"^/(fix|triage|ai-fix)\b\s*(.*)$", re.IGNORECASE)
+
+#: 评论命令：`/fix` 修复、`/triage` 巡检；`/ai-fix` 是旧写法，保留兼容。
+_FIX_COMMANDS = frozenset({"fix", "ai-fix"})
+
+
+def parse_command(text: str) -> str | None:
+    """把评论正文解析成命令：`/fix` → `run`，`/fix retry` → `retry`，`/triage` → `triage`。"""
     first_line = text.strip().splitlines()[0].strip() if text.strip() else ""
-    token = f"/{label}"
-    if not first_line.lower().startswith(token.lower()):
+    match = _COMMAND_RE.match(first_line)
+    if match is None:
         return None
-    rest = first_line[len(token) :].strip().lower()
+    word = match.group(1).lower()
+    rest = match.group(2).strip().lower()
+    if word == "triage":
+        return "triage"
+    if word not in _FIX_COMMANDS:
+        return None
     if not rest:
         return "run"
     if rest in ("retry", "rerun"):
@@ -240,7 +261,7 @@ def _parse_note(payload: Mapping[str, Any], settings, key: str, event_type: str)
     if attrs.get("noteable_type") != "Issue":
         return _ignored("note_not_on_issue", key, event_type)
 
-    command = parse_command(str(attrs.get("note") or ""), settings.ai_fix_label)
+    command = parse_command(str(attrs.get("note") or ""))
     if command is None:
         return _ignored("not_a_command", key, event_type)
 

@@ -25,7 +25,7 @@
 ## 概要
 Closes #{{issue_iid}}
 
-由 `mini-gitlab-bot` 自动生成（draft，需人工审批）。触发：@{{trigger_user}} 于 {{trigger_time}} 打上 `ai-fix` 标签。
+由 `mini-gitlab-bot` 自动生成（draft，需人工审批）。触发：@{{trigger_user}} 于 {{trigger_time}} 打上 `机器人：修复` 标签。
 任务：`{{task_id}}`
 
 **摘要**：{{summary}}
@@ -145,7 +145,7 @@ Closes #{{issue_iid}}
 </details>
 
 **如何重试**
-- 重新打一次 `ai-fix` 标签，或评论 `/ai-fix retry`
+- 重新打一次 `机器人：修复` 标签，或评论 `/fix retry`
 - 若需人工接管：{{takeover_hint}}
 
 触发人 @{{trigger_user}} · 任务 `{{task_id}}` · 耗时 {{elapsed}}
@@ -164,7 +164,7 @@ Closes #{{issue_iid}}
 | push 失败（非快进等） | `push 失败：{{git_error}}` |
 | 超时 | `任务超时（{{elapsed}} > {{timeout}}）` |
 
-失败时标签流转为 `ai-fix:failed`，**不移除** issue 上的原始上下文；重试会产生新 `task_id`，新评论用新标记，旧评论保留为历史。
+失败时标签流转为 `状态：处理失败`，**不移除** issue 上的原始上下文；重试会产生新 `task_id`，新评论用新标记，旧评论保留为历史。
 
 ---
 

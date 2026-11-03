@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.labels import SKIP_LABEL
+from core.labels import SKIP_LABEL, TRIAGE_LABEL, TRIGGER_LABEL
 from core.models import TriggerKind
 from gateway.webhook import delivery_key, parse_command, parse_webhook, verify_token
 from tests.payloads import headers, issue_payload, note_payload
@@ -39,7 +39,7 @@ def test_verify_token_fails_closed(provided: str | None, expected: str) -> None:
 
 
 def test_label_added_triggers(settings) -> None:
-    event = _parse(issue_payload(previous=(), current=("ai-fix",)), settings=settings)
+    event = _parse(issue_payload(previous=(), current=(TRIGGER_LABEL,)), settings=settings)
     assert event.trigger is not None
     assert event.reason == "label_added"
     trigger = event.trigger
@@ -49,18 +49,27 @@ def test_label_added_triggers(settings) -> None:
     assert trigger.actor.user_id == 7
     assert trigger.project.project_id == 42
     assert trigger.project.path == "group/project-a"
-    assert "ai-fix" in trigger.issue_labels
+    assert TRIGGER_LABEL in trigger.issue_labels
+
+
+def test_triage_label_triggers_triage_command(settings) -> None:
+    event = _parse(issue_payload(previous=(), current=(TRIAGE_LABEL,)), settings=settings)
+    assert event.trigger is not None
+    assert event.trigger.kind is TriggerKind.LABEL
+    assert event.trigger.command == "triage"
 
 
 def test_label_added_alongside_other_labels_triggers(settings) -> None:
-    event = _parse(issue_payload(previous=("bug",), current=("bug", "ai-fix")), settings=settings)
+    event = _parse(
+        issue_payload(previous=("bug",), current=("bug", TRIGGER_LABEL)), settings=settings
+    )
     assert event.trigger is not None
 
 
 def test_label_removed_does_not_trigger(settings) -> None:
-    event = _parse(issue_payload(previous=("ai-fix",), current=()), settings=settings)
+    event = _parse(issue_payload(previous=(TRIGGER_LABEL,), current=()), settings=settings)
     assert event.trigger is None
-    assert event.reason == "ai_fix_label_not_added"
+    assert event.reason == "bot_label_not_added"
 
 
 def test_open_action_triggers_triage(settings) -> None:
@@ -106,16 +115,23 @@ def test_bot_own_label_event_is_ignored(settings) -> None:
 
 
 def test_comment_command_triggers(settings) -> None:
-    event = _parse(note_payload(note="/ai-fix"), hdrs=headers(event="Note Hook"), settings=settings)
+    event = _parse(note_payload(note="/fix"), hdrs=headers(event="Note Hook"), settings=settings)
     assert event.trigger is not None
     assert event.trigger.kind is TriggerKind.COMMENT
     assert event.trigger.command == "run"
     assert event.trigger.issue_iid == 13
 
 
+def test_comment_triage_command(settings) -> None:
+    event = _parse(note_payload(note="/triage"), hdrs=headers(event="Note Hook"), settings=settings)
+    assert event.trigger is not None
+    assert event.trigger.kind is TriggerKind.COMMENT
+    assert event.trigger.command == "triage"
+
+
 def test_comment_retry_command(settings) -> None:
     event = _parse(
-        note_payload(note="/ai-fix retry"), hdrs=headers(event="Note Hook"), settings=settings
+        note_payload(note="/fix retry"), hdrs=headers(event="Note Hook"), settings=settings
     )
     assert event.trigger is not None
     assert event.trigger.command == "retry"
@@ -134,7 +150,7 @@ def test_system_note_from_label_change_is_ignored(settings) -> None:
 
 def test_note_on_merge_request_is_ignored(settings) -> None:
     event = _parse(
-        note_payload(note="/ai-fix", noteable_type="MergeRequest"),
+        note_payload(note="/fix", noteable_type="MergeRequest"),
         hdrs=headers(event="Note Hook"),
         settings=settings,
     )
@@ -144,7 +160,7 @@ def test_note_on_merge_request_is_ignored(settings) -> None:
 
 def test_bot_own_comment_is_ignored(settings) -> None:
     event = _parse(
-        note_payload(note="/ai-fix", username="mini-gitlab-bot"),
+        note_payload(note="/fix", username="mini-gitlab-bot"),
         hdrs=headers(event="Note Hook"),
         settings=settings,
     )
@@ -154,7 +170,7 @@ def test_bot_own_comment_is_ignored(settings) -> None:
 
 @pytest.mark.parametrize(
     "note",
-    ["/ai-fixx", "please run /ai-fix", "ai-fix", "/ai-fix please now", "/other"],
+    ["/fixx", "please run /fix", "fix", "/fix please now", "/other"],
 )
 def test_non_command_notes_are_ignored(note: str, settings) -> None:
     event = _parse(note_payload(note=note), hdrs=headers(event="Note Hook"), settings=settings)
@@ -165,14 +181,16 @@ def test_non_command_notes_are_ignored(note: str, settings) -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("/ai-fix", "run"),
-        ("/ai-fix retry", "retry"),
-        ("/AI-FIX Rerun", "retry"),
-        ("/ai-fix x", None),
+        ("/fix", "run"),
+        ("/fix retry", "retry"),
+        ("/FIX Rerun", "retry"),
+        ("/triage", "triage"),
+        ("/ai-fix", "run"),  # 旧写法保留兼容
+        ("/fix x", None),
     ],
 )
 def test_parse_command(text: str, expected: str | None) -> None:
-    assert parse_command(text, "ai-fix") == expected
+    assert parse_command(text) == expected
 
 
 # --------------------------------------------------------------------------- #

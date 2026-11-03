@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from core.labels import STATUS_FAILED
 from core.states import TaskState
 from tests.helpers import make_trigger
 
@@ -72,7 +73,7 @@ async def test_watchdog_fails_task_when_attempts_exhausted_and_notifies(
     assert "已达最大重试次数" in (task.failure_reason or "")
 
     # 看门狗判失败也必须走收尾：切标签 + 贴失败评论（失败不静默）
-    assert scm.current_labels == {"ai-fix:failed"}
+    assert scm.current_labels == {STATUS_FAILED}
     assert scm.comments, "看门狗判失败后应当有状态评论"
     assert "失败" in scm.comments[0]["body"]
 

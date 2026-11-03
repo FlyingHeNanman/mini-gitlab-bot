@@ -9,6 +9,7 @@ import pytest
 
 from adapters.fakes import FakeAgent, FakeEnvPreparer, FakeSCM, FakeVCS, FakeWorkspace
 from adapters.sqlite_store import SqliteStore
+from core.labels import TRIGGER_LABEL
 from gateway.config import Settings
 from gateway.runtime import Runtime, build_runtime
 from tests.helpers import ALICE_ID, PROJECT_PATH, Clock, Harness
@@ -24,7 +25,7 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         webhook_secret="s3cr3t",
         repo_whitelist=[PROJECT_PATH],
-        ai_fix_label="ai-fix",
+        ai_fix_label=TRIGGER_LABEL,
         bot_username="mini-gitlab-bot",
         allowed_trigger_users=[],
         min_access_level=30,

@@ -15,6 +15,8 @@ from adapters.fakes import (
     default_agent_result,
 )
 from core import labels, layout
+from core.label_sync import FALLBACK_COMPONENT_LABEL
+from core.labels import TRIGGER_LABEL
 from core.models import TriggerKind
 from core.states import TaskKind, TaskState
 from core.triage import triage_marker
@@ -60,8 +62,8 @@ class Harness:
 def build(make_runtime: Any, clock: Clock, **overrides: Any) -> Harness:
     scm = overrides.pop("scm", None) or FakeSCM(
         access_levels={ALICE_ID: 30},
-        labels=("ai-fix", "类型：新功能", "严重度：严重"),
-        project_labels=("ai-fix",),
+        labels=(TRIGGER_LABEL, "类型：新功能", "严重度：严重"),
+        project_labels=(),
     )
     runtime, _ = make_runtime(
         scm=scm,
@@ -121,11 +123,11 @@ async def test_triage_creates_its_own_labels_once(make_runtime, clock: Clock) ->
     h = build(make_runtime, clock)
     await h.run_triage()
     created = {item["name"] for item in h.scm.created_labels}
-    assert created == {label.name for label in labels.LABELS}
+    assert created == {label.name for label in labels.LABELS} | {FALLBACK_COMPONENT_LABEL.name}
 
     # 同一项目第二次巡检不再重复创建
     await h.run_triage(issue_iid=13, delivery="d-2")
-    assert len(h.scm.created_labels) == len(labels.LABELS)
+    assert len(h.scm.created_labels) == len(labels.LABELS) + 1
 
 
 @pytest.mark.asyncio
@@ -182,8 +184,8 @@ async def test_env_failure_marks_task_failed_before_agent(make_runtime, clock: C
 async def test_label_creation_failure_does_not_fail_triage(make_runtime, clock: Clock) -> None:
     scm = FakeSCM(
         access_levels={ALICE_ID: 30},
-        labels=("ai-fix",),
-        project_labels=("ai-fix",),
+        labels=(TRIGGER_LABEL,),
+        project_labels=(TRIGGER_LABEL,),
         fail_on=("create_label",),
     )
     h = build(make_runtime, clock, scm=scm)
@@ -196,7 +198,7 @@ async def test_label_creation_failure_does_not_fail_triage(make_runtime, clock: 
 async def test_scm_failure_fails_cleanly_without_raising(make_runtime, clock: Clock) -> None:
     scm = FakeSCM(
         access_levels={ALICE_ID: 30},
-        labels=("ai-fix",),
+        labels=(TRIGGER_LABEL,),
         fail_on=("load_issue_context",),
     )
     h = build(make_runtime, clock, scm=scm)

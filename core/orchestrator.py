@@ -14,19 +14,21 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from core import layout, render
+from core import labels, layout, render
 from core.branch import branch_name
 from core.context import render_context
+from core.label_sync import LabelEnsurer
 from core.models import EnvReport, Task, Workdir
 from core.policy import DiffPolicy, describe_agent_failure
 from core.states import STAGE_LABELS, TaskState
 
 logger = logging.getLogger(__name__)
 
-AI_FIX_LABEL = "ai-fix"
-RUNNING_LABEL = "ai-fix:running"
-DONE_LABEL = "ai-fix:done"
-FAILED_LABEL = "ai-fix:failed"
+#: 触发标签（人工打上）与流转标签（机器人独占）。硬切后全部用中文标签体系。
+AI_FIX_LABEL = labels.TRIGGER_LABEL
+RUNNING_LABEL = labels.STATUS_FIXING
+DONE_LABEL = labels.STATUS_REVIEW
+FAILED_LABEL = labels.STATUS_FAILED
 
 
 class _NoopEnv:
@@ -78,6 +80,7 @@ class TaskOrchestrator:
         self._config = config or OrchestratorConfig()
         self._metrics = metrics
         self._clock = clock
+        self._labels = LabelEnsurer(scm)
 
     # ------------------------------------------------------------------ #
     # 主流程
@@ -321,7 +324,8 @@ class TaskOrchestrator:
     # ------------------------------------------------------------------ #
 
     async def start_task(self, task: Task) -> None:
-        """标记运行中：`ai-fix` → `ai-fix:running`，并贴出状态评论。"""
+        """标记运行中：`机器人：修复` → `状态：自动修复中`，并贴出状态评论。"""
+        await self._best_effort(task, "ensure_labels", self._labels.ensure(task.project.project_id))
         await self._best_effort(
             task,
             "start_notify",

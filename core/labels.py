@@ -188,3 +188,18 @@ def validate_triage_labels(*, type_value: str, severity: str) -> tuple[str, str]
     if severity not in TRIAGE_ENUMS["severity"]:
         raise ValueError(f"非法严重度标签值：{severity!r}")
     return type_value, severity
+
+
+#: 旧 fix 链路的四个标签（硬切后不再产生，迁移脚本负责从项目里清掉）。
+LEGACY_FIX_LABELS: tuple[str, ...] = (
+    "ai-fix",
+    "ai-fix:running",
+    "ai-fix:done",
+    "ai-fix:failed",
+)
+
+
+def legacy_labels_present(existing: Iterable[str]) -> tuple[str, ...]:
+    """返回项目里仍然存在的旧标签（迁移脚本用）。"""
+    present = set(existing)
+    return tuple(name for name in LEGACY_FIX_LABELS if name in present)

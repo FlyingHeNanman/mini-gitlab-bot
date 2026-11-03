@@ -99,7 +99,7 @@ def test_render_failed_contains_reason_evidence_and_retry_hint() -> None:
     assert "codex 退出码 1" in body
     assert "exit_code=1" in body
     assert "如何重试" in body
-    assert "/ai-fix retry" in body
+    assert "/fix retry" in body
     assert "traceback" in body
 
 

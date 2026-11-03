@@ -476,7 +476,7 @@ def group_of(name: str) -> str | None:
 | 变量 | 说明 | 默认 |
 | --- | --- | --- |
 | `MODEL_TRIAGE` / `MODEL_EXPLAIN` / `MODEL_FIX` | 分阶段模型 | 回落 `MODEL_NAME` |
-| `TRIAGE_ENABLED` | 新 issue 自动巡检总开关；执行器已落地，默认仍 `false`，生产上验证一个真 issue 后再开 | `false` |
+| `TRIAGE_ENABLED` | 新 issue 自动巡检总开关；真机验证通过，默认开启（可显式关掉） | `true` |
 | `AUTOFIX_ENABLED` | 小改动自动修总开关 | `true` |
 | `AUTOFIX_MAX_FILES` / `AUTOFIX_MAX_LINES` | 自动修规模上限 | `3` / `150` |
 | `AUTOFIX_MIN_CONFIDENCE` | 自动修置信下限 | `0.7` |
@@ -506,7 +506,7 @@ def group_of(name: str) -> str | None:
 
 | 里程碑 | 内容 | 判据 |
 | --- | --- | --- |
-| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 535 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
+| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 547 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
 | **M7 自动修 + 指派** | 裁决、内部 enqueue、组件映射（CODEOWNERS / 顶层目录） | 小 bug 出 draft MR；大 bug 有 assignee 和 @ |
 | **M8 解释响应** | merge 事件、diff 读取、解释评论、标签流转 | bot MR 与人工 MR 各跑通一次 |
 | **M9（可选）** | 真验证（复跑 repro / 回归测试）＋ fix 迁到 Runner | 446 项测试等价迁移；真实验证一次通过、一次失败 |

@@ -18,6 +18,7 @@ import pytest
 
 from adapters.sqlite_store import SqliteStore
 from core import layout
+from core.labels import TRIGGER_LABEL
 from core.states import TaskState
 from gateway.config import Settings
 from gateway.runtime import build_production_runtime
@@ -182,7 +183,7 @@ def e2e(tmp_path: Path, origin: Path, clock: Clock):
         overrides = {
             "webhook_secret": "s3cr3t",
             "repo_whitelist": [PROJECT_PATH],
-            "ai_fix_label": "ai-fix",
+            "ai_fix_label": TRIGGER_LABEL,
             "bot_username": "mini-gitlab-bot",
             "min_access_level": 30,
             "db_path": tmp_path / f"tasks-{name}.db",
