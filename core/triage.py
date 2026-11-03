@@ -59,8 +59,13 @@ class TriageResult:
     repro_command: str = ""
     repro_result: str = "not_run"
     repro_evidence: str = ""
+    regression_test_patch: str = ""
     similar: tuple[tuple[int, str, str], ...] = ()
     recommendation: str = "assign"
+    size_files: int = 0
+    size_lines: int = 0
+    risk: str = ""
+    deps: tuple[str, ...] = ()
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -78,13 +83,16 @@ class TriageResult:
     @property
     def evidence_builders(self) -> tuple[str, ...]:
         """证据标签：只有真跑过才打，避免"无法复现"变成一句空话。"""
+        evidence: list[str] = []
         if self.repro_result == "reproduced":
-            return (labels.EVIDENCE_REPRODUCED,)
-        if self.repro_result == "failed":
-            return (labels.EVIDENCE_NOT_REPRODUCED,)
-        if self.verdict is TriageVerdict.NEED_INFO:
-            return (labels.EVIDENCE_NO_ENV,)
-        return ()
+            evidence.append(labels.EVIDENCE_REPRODUCED)
+        elif self.repro_result == "failed":
+            evidence.append(labels.EVIDENCE_NOT_REPRODUCED)
+        elif self.verdict is TriageVerdict.NEED_INFO:
+            evidence.append(labels.EVIDENCE_NO_ENV)
+        if self.regression_test_patch.strip():
+            evidence.append(labels.EVIDENCE_REGRESSION_TEST)
+        return tuple(evidence)
 
 
 def triage_marker(issue_iid: int) -> str:
@@ -94,6 +102,13 @@ def triage_marker(issue_iid: int) -> str:
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _clean_path(path: str) -> str:
@@ -169,6 +184,12 @@ def parse_triage_result(report: Mapping[str, Any]) -> TriageResult:
     if recommendation not in RECOMMENDATIONS:
         recommendation = "assign"
 
+    size = _as_mapping(report.get("size"))
+    raw_deps = report.get("deps") or size.get("deps") or ()
+    if isinstance(raw_deps, str):
+        raw_deps = (raw_deps,)
+    deps = tuple(dict.fromkeys(str(item).strip() for item in raw_deps if str(item).strip()))
+
     return TriageResult(
         verdict=verdict,
         confidence=confidence,
@@ -179,8 +200,13 @@ def parse_triage_result(report: Mapping[str, Any]) -> TriageResult:
         repro_command=str(repro.get("command") or "").strip(),
         repro_result=repro_result,
         repro_evidence=str(repro.get("evidence") or "").strip(),
+        regression_test_patch=str(repro.get("regression_test_patch") or "").strip(),
         similar=tuple(similar),
         recommendation=recommendation,
+        size_files=_as_int(size.get("files"), len(files)),
+        size_lines=_as_int(size.get("lines"), 0),
+        risk=str(size.get("risk") or "").strip().lower(),
+        deps=deps,
         raw=dict(report),
     )
 
@@ -194,7 +220,11 @@ def _bullets(items: Sequence[str], *, empty: str) -> str:
 
 
 def label_plan(
-    current_labels: Iterable[str], result: TriageResult
+    current_labels: Iterable[str],
+    result: TriageResult,
+    *,
+    status: str | None = None,
+    extra_add: Iterable[str] = (),
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """计算要加的标签与要移除的同组旧标签（互斥由网关保证）。"""
     current = tuple(current_labels)
@@ -202,8 +232,9 @@ def label_plan(
         f"类型{labels.SEPARATOR}{result.type_value}",
         f"严重度{labels.SEPARATOR}{result.severity}",
         labels.component_label(result.component),
-        result.status_label,
+        status or result.status_label,
         *result.evidence_builders,
+        *extra_add,
     ]
     remove: list[str] = []
     for name in add:
@@ -217,6 +248,7 @@ def render_triage_comment(
     result: TriageResult,
     *,
     worktree_dirty: bool = False,
+    autofix: bool = False,
     now: datetime | None = None,
 ) -> str:
     now = now or datetime.now(UTC)
@@ -262,6 +294,11 @@ def render_triage_comment(
         "",
         f"`{result.recommendation}`",
     ]
+    if autofix:
+        parts += [
+            "",
+            "> ✅ 已自动排入修复任务（改动小、置信度高）；产出 draft MR，合并仍需人工审批。",
+        ]
     if worktree_dirty:
         parts += [
             "",

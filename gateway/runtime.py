@@ -35,6 +35,7 @@ from adapters.unavailable import (
     UnavailableWorkspace,
 )
 from adapters.uv_env import UvEnvPreparer, UvSettings
+from core.autofix import AutofixConfig
 from core.mcp_spec import TOOL_NAMES
 from core.metrics import Metrics
 from core.models import Task
@@ -136,6 +137,14 @@ def build_runtime(
         metrics=metrics,
         clock=clock,
         timeout_sec=settings.agent_timeout_sec,
+        autofix=AutofixConfig(
+            enabled=settings.autofix_enabled,
+            max_files=settings.autofix_max_files,
+            max_lines=settings.autofix_max_lines,
+            min_confidence=settings.autofix_min_confidence,
+            min_access_level=settings.autofix_min_access_level,
+            forbidden_paths=tuple(settings.forbidden_paths),
+        ),
     )
     router = KindRouter({TaskKind.FIX: orchestrator, TaskKind.TRIAGE: triage})
 

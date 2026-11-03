@@ -15,11 +15,21 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from core import labels, layout
+from core.autofix import AutofixConfig, AutofixDecision, adjudicate
 from core.label_sync import LabelEnsurer
-from core.models import EnvReport, IssueContext, Task, Workdir
+from core.models import (
+    EnvReport,
+    IssueContext,
+    Task,
+    Trigger,
+    TriggerActor,
+    TriggerKind,
+    Workdir,
+)
 from core.policy import describe_agent_failure
-from core.states import TaskState
+from core.states import TaskKind, TaskState
 from core.triage import (
+    TriageResult,
     TriageResultError,
     label_plan,
     parse_triage_result,
@@ -53,6 +63,7 @@ class TriageOrchestrator:
         metrics=None,
         clock: Callable[[], datetime] = _utcnow,
         timeout_sec: float = 600.0,
+        autofix: AutofixConfig | None = None,
     ) -> None:
         self._store = store
         self._scm = scm
@@ -61,6 +72,7 @@ class TriageOrchestrator:
         self._workspace = workspace
         self._env = env
         self._metrics = metrics
+        self._autofix = autofix or AutofixConfig(enabled=False)
         self._clock = clock
         self._timeout_sec = timeout_sec
         self._labels = LabelEnsurer(scm)
@@ -135,7 +147,23 @@ class TriageOrchestrator:
 
             triage = parse_triage_result(agent_result.report)
             worktree_dirty = await self._worktree_dirty(task, workdir)
-            add, remove = label_plan(current_labels, triage)
+            decision = await self._autofix_decision(task, triage)
+            scheduled = False
+            fix_task_id: str | None = None
+            if decision.allowed:
+                scheduled, fix_task_id = await self._enqueue_fix(task, triage)
+
+            extra_add: list[str] = []
+            if scheduled:
+                extra_add.append(labels.TRIGGER_LABEL)  # 界面一致；fix 开始后会移除
+            else:
+                extra_add.extend(decision.risk_labels)
+            add, remove = label_plan(
+                current_labels,
+                triage,
+                status=labels.STATUS_FIXING if scheduled else None,
+                extra_add=extra_add,
+            )
             task = self._store.transition(
                 task.id,
                 TaskState.FINALIZING,
@@ -147,6 +175,12 @@ class TriageOrchestrator:
                     "component": triage.component,
                     "files": list(triage.files),
                     "worktree_dirty": worktree_dirty,
+                    "autofix": {
+                        "allowed": decision.allowed,
+                        "scheduled": scheduled,
+                        "reason": decision.reason,
+                        "fix_task_id": fix_task_id,
+                    },
                     "repro": {
                         "command": triage.repro_command,
                         "result": triage.repro_result,
@@ -157,7 +191,12 @@ class TriageOrchestrator:
                 task, "triage_labels", self._scm.set_labels(task, add=add, remove=remove)
             )
             body = render_triage_comment(
-                task, issue, triage, worktree_dirty=worktree_dirty, now=self._clock()
+                task,
+                issue,
+                triage,
+                worktree_dirty=worktree_dirty,
+                autofix=scheduled,
+                now=self._clock(),
             )
             await self._best_effort(
                 task,
@@ -169,6 +208,7 @@ class TriageOrchestrator:
             self._count_finished(TaskState.SUCCEEDED, task)
             if self._metrics is not None:
                 self._metrics.inc("triage_total", verdict=triage.verdict.value)
+                self._metrics.inc("autofix_total", decision=decision.reason)
             return task
         except TriageResultError as exc:
             log_tail = agent_result.log_tail if agent_result is not None else ""
@@ -267,6 +307,49 @@ class TriageOrchestrator:
     # ------------------------------------------------------------------ #
     # 内部
     # ------------------------------------------------------------------ #
+
+    async def _autofix_decision(self, task: Task, triage: TriageResult) -> AutofixDecision:
+        if not self._autofix.enabled:
+            return adjudicate(triage, self._autofix)
+        access_level = None
+        if self._autofix.min_access_level > 0 and task.trigger_actor_id is not None:
+            try:
+                access_level = await self._scm.get_member_access_level(
+                    task.project.project_id, task.trigger_actor_id
+                )
+            except Exception as exc:  # noqa: BLE001 查不到权限就按不满足处理
+                logger.warning("巡检任务 %s 查询触发者权限失败：%s", task.id, exc)
+        return adjudicate(triage, self._autofix, access_level=access_level)
+
+    async def _enqueue_fix(self, task: Task, triage: TriageResult) -> tuple[bool, str | None]:
+        """内部派生 fix 任务；不靠标签二次触发（机器人自己的事件会被过滤）。"""
+        trigger = Trigger(
+            kind=TriggerKind.LABEL,
+            project=task.project,
+            issue_iid=task.issue_iid,
+            actor=TriggerActor(user_id=task.trigger_actor_id, username=task.trigger_actor),
+            delivery_key=f"autofix:{task.id}",
+            issue_labels=(),
+        )
+        try:
+            outcome = self._store.enqueue(
+                trigger,
+                now=self._clock(),
+                kind=TaskKind.FIX,
+                subject_key=f"issue:{task.issue_iid}",
+                parent_task_id=task.id,
+                payload={"autofix": True, "reason": "triage_eligible"},
+            )
+        except Exception as exc:  # noqa: BLE001 派生失败不能拖垮巡检
+            logger.error("巡检任务 %s 派生 fix 任务失败：%s", task.id, exc)
+            return False, None
+        if outcome.reason == "active_task_exists":
+            existing = outcome.task
+            return True, existing.id if existing is not None else None
+        if not outcome.created or outcome.task is None:
+            logger.warning("巡检任务 %s 派生 fix 未创建：%s", task.id, outcome.reason)
+            return False, None
+        return True, outcome.task.id
 
     async def _set_status(self, task: Task, current: tuple[str, ...], status: str) -> None:
         remove = labels.exclusive_removals(current, keep=status)

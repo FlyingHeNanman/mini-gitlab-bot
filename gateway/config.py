@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     ai_fix_label: str = TRIGGER_LABEL
     #: 新 issue 自动巡检总开关；真机验证通过后默认开启
     triage_enabled: bool = True
+    #: 小改动自动修（triage 结论满足确定性规则时内部派生 fix 任务）
+    autofix_enabled: bool = True
+    autofix_max_files: int = 3
+    autofix_max_lines: int = 150
+    autofix_min_confidence: float = 0.7
+    #: 0 = 不检查权限；任何能提 issue 的账号都可触发自动修
+    autofix_min_access_level: int = 0
     bot_username: str = ""
     allowed_trigger_users: CsvList = Field(default_factory=list)
     min_access_level: int = 30  # Developer（PLAN §7 加固基线 8）

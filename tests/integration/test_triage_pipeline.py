@@ -217,3 +217,49 @@ async def test_dirty_worktree_is_flagged_in_comment(make_runtime, clock: Clock) 
     body = next(c["body"] for c in h.scm.comments if c["marker"] == triage_marker(12))
     assert "未提交的修改" in body
     assert "不代表仓库现状" in body
+
+
+@pytest.mark.asyncio
+async def test_eligible_triage_enqueues_fix_task(make_runtime, clock: Clock) -> None:
+    report = {
+        **REPORT,
+        "recommendation": "self_fix",
+        "size": {"files": 1, "lines": 3, "risk": "low"},
+    }
+    h = build(
+        make_runtime,
+        clock,
+        agent=FakeAgent(result=default_agent_result(report=report)),
+    )
+    task, handled = await h.run_triage()
+    assert handled == 2  # 巡检 + 内部派生的 fix
+    assert task.state is TaskState.SUCCEEDED
+    assert task.payload["autofix"]["scheduled"] is True
+
+    fix_task = next(t for t in h.runtime.store.list_tasks() if t.kind is TaskKind.FIX)
+    assert fix_task.parent_task_id == task.id
+    assert fix_task.state is TaskState.SUCCEEDED
+
+    body = next(c["body"] for c in h.scm.comments if c["marker"] == triage_marker(12))
+    assert "已自动排入修复任务" in body
+    assert labels.STATUS_REVIEW in h.scm.current_labels
+
+
+@pytest.mark.asyncio
+async def test_oversized_triage_does_not_enqueue_fix(make_runtime, clock: Clock) -> None:
+    report = {
+        **REPORT,
+        "recommendation": "self_fix",
+        "size": {"files": 9, "lines": 400, "risk": "low"},
+    }
+    h = build(
+        make_runtime,
+        clock,
+        agent=FakeAgent(result=default_agent_result(report=report)),
+    )
+    task, handled = await h.run_triage()
+    assert handled == 1
+    assert task.payload["autofix"]["scheduled"] is False
+    assert not [t for t in h.runtime.store.list_tasks() if t.kind is TaskKind.FIX]
+    assert labels.STATUS_NEEDS_HUMAN in h.scm.current_labels
+    assert labels.RISK_LARGE_DIFF in h.scm.current_labels

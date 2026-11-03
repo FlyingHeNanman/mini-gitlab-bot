@@ -200,7 +200,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 547 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 562 项，无需 GitLab / 无需 LLM
 ```
 
 测试分层：
@@ -242,8 +242,9 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 547 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 562 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
+| 自动修（真件） | ✅ 巡检判定 eligible → 内部派生 fix → 真 codex 修复 → draft MR（父任务链、draft、Closes 均验证） |
 | 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
 | 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |
 | 只读 MCP | ✅ 11 个工具在真实 GitLab 数据上逐个验证（含真实 CI 日志） |
