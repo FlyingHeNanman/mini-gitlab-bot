@@ -157,7 +157,7 @@ def _config_body(
     top = (
         f"""<div class="topbar">
   {brand(subtitle="配置")}
-  <nav class="nav"><a href="/dashboard">总览</a><a href="/dashboard#recent">最近任务</a><a href="/dashboard#projects">项目</a><a class="active" href="/settings">配置</a></nav>
+  <nav class="nav"><a href="/dashboard">总览</a><a href="/dashboard/recent">最近任务</a><a href="/dashboard/projects">项目</a><a class="active" href="/settings">配置</a></nav>
   <div class="top-actions"><span class="avatar">{html.escape((username[:1] or "A").upper())}</span><form method="post" action="/logout"><button class="btn btn-quiet btn-small" type="submit">退出</button></form></div>
 </div>"""
         if not setup

@@ -178,7 +178,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 | `GET /metrics` | Prometheus 文本：`tasks_total{state}`、`task_duration_seconds`、`queue_depth`、`worker_inflight`、`sweep_*`、`release_*`… |
 | `GET /tasks` | **只读任务页**（token 保护）：状态、失败阶段、原因、耗时、MR 链接，点进去看日志尾部 |
 | `GET /tasks.json` | 同上，给脚本用 |
-| `GET /dashboard` | **只读观测台**（登录页 + session）：健康、7 日趋势、失败中心、项目、最近任务 |
+| `GET /dashboard` | **只读观测台**（登录页 + session）：健康、7 日趋势、失败中心；`/dashboard/recent`、`/dashboard/projects` 为独立切换页 |
 
 `/tasks` 默认开启但**必须带 token**：没配 `ADMIN_TOKEN` 时首次启动自动生成，持久化到
 `<DB_PATH 同目录>/admin_token`（0600），`cat /data/admin_token` 取即可。
@@ -260,7 +260,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 672 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 677 项，无需 GitLab / 无需 LLM
 ```
 
 预览 Dashboard（临时 SQLite + 样例任务，不接真 GitLab）：
@@ -310,7 +310,7 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 672 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 677 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
 | 自动修（真件） | ✅ 巡检判定 eligible → 内部派生 fix → 真 codex 修复 → draft MR（父任务链、draft、Closes 均验证） |
 | 重复/指派 | ✅ 高置信重复关联并关闭；CODEOWNERS 命中即指派；GitLab assign/link/close API 已真机验证 |
