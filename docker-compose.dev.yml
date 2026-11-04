@@ -1,0 +1,9 @@
+# 源码构建覆盖层；与主 compose 合并使用：
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+services:
+  bot:
+    build:
+      context: .
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.163.0}
+    image: mini-gitlab-bot:dev

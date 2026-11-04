@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "Dockerfile"
 COMPOSE = ROOT / "docker-compose.yml"
+DEV_COMPOSE = ROOT / "docker-compose.dev.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 
 
@@ -101,7 +102,10 @@ def test_compose_has_one_service_with_healthcheck_and_volumes() -> None:
     assert "/readyz" in text
     assert "bot-data:/data" in text
     assert "bot-work:/work" in text
-    assert "env_file:" in text
+    assert "image: ghcr.io/flyinghenanman/mini-gitlab-bot:" in text
+    assert "CONFIG_FILE: /data/config.json" in text
+    # 默认部署不再要求先复制 .env
+    assert "env_file:" not in text
 
 
 def test_compose_hardens_the_container() -> None:
@@ -115,8 +119,9 @@ def test_compose_hardens_the_container() -> None:
     assert "stop_grace_period" in text
 
 
-def test_compose_pins_codex_version_arg() -> None:
-    assert re.search(r"CODEX_VERSION: \$\{CODEX_VERSION:-", compose())
+def test_dev_compose_pins_codex_version_arg() -> None:
+    text = DEV_COMPOSE.read_text(encoding="utf-8")
+    assert re.search(r"CODEX_VERSION: \$\{CODEX_VERSION:-", text)
 
 
 @pytest.mark.parametrize("name", ["core", "ports", "adapters", "gateway"])

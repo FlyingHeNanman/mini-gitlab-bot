@@ -8,24 +8,18 @@
 **任何界面（HTML、CSS、模板、预览页、空态、按钮、表格、表单）的设计与实现，
 必须先完整阅读根目录的 [DESIGN.md](DESIGN.md)，并以它作为唯一视觉规范。**
 
-具体要求：
+当前 `DESIGN.md` 是「云图柔板 / Dusty Canvas」体系，不是 Apple 式极简体系。落地要求：
 
-- 颜色只用 `DESIGN.md` 的 token：Action Blue `#0066cc` 是**唯一**交互强调色；
-  不要引入第二个品牌色/强调色（状态可以用 ink / muted / tile 的明暗来表达）。
-- 字体：Display 用 `SF Pro Display, system-ui, -apple-system, ...`；
-  Body 用 `SF Pro Text, system-ui, -apple-system, ...`。正文 17px / 400 / 1.47，
-  display 标题 600 且带负字距；不要用 500 字重。
-- 间距按 8px 基准；section 80px、卡片 24px、圆角只用 `sm(8)` / `lg(18)` / `pill`。
-- 不要加装饰性渐变；不要给卡片/按钮/文字加阴影。唯一允许的 drop-shadow 是
-  产品摄影图落在表面时使用，本项目的 Dashboard 没有产品图，因此不要用阴影。
-- 主 CTA 用 Action Blue 全圆角 pill；次 CTA 用透明底 + Action Blue 描边 pill；
-  press 状态统一 `transform: scale(0.95)`；focus 用 `#0071e3` 的 2px outline。
-- 版面遵循 DESIGN.md 的脉冲：浅色/ parchment hero → 深色 tile → 浅色 utility →
-  深色 tile → parchment footer；全 bleed tile 不要圆角，靠表面色变化做分隔。
-- 响应式至少覆盖 1440 / 1068 / 833 / 640 / 419 断点；触控目标不小于 44px。
-- **不要为了 UI 引入新的 Web 框架、构建链或外部字体/图片依赖**；继续用
-  FastAPI 服务端渲染 + 纯 CSS。若必须偏离 DESIGN.md，先在回复里说明 token 缺口，
-  得到用户确认后再做。
+- 页面外框 `#B0B7CE`，应用容器 `#F0F1F4`、28px 圆角、三档冷色阴影；卡片 `#FFFFFF`、22px 圆角、`0 2px 8px rgba(30,40,70,.06)`。
+- 文字只用 `ink #1B2A4A` / `ink-2 #46536A` / `muted #8A92A0`；**不要纯黑**。
+- 珊瑚红 `#E24D33` 是唯一品牌强调色：一屏只用于一个焦点（Logo、关键数字或主状态），不要满屏红。
+- 失败用 `#C2503A` + `#F9E5E0` 浅底；警告用 `#B9822A` + `#FBF0DA` 浅底；图表最多钢蓝 + 深海军蓝。
+- 标题/大数字用衬线 `Source Serif 4, Newsreader, Georgia, "Songti SC", serif`；正文/UI 用 `Inter, -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif`。正文 14px/22，大标题 40/48。
+- 卡片靠阴影分层，**不要硬描边**；按钮/胶囊/头像全圆角，主按钮深海军蓝底白字 + `›`。
+- 不要渐变、不要深色模式、不要高密度数据表；列表行优先于表格。允许的唯一纹理是 Premium 卡网点（本项目不用）。
+- 图标块圆角 14；卡片 22；shell 28；按钮全圆角；触控目标不小于 44px。
+- 响应式覆盖 ≥1280 / 1024–1279 / 768–1023 / <768；窄屏主分栏改单列。
+- **不要为了 UI 引入新的 Web 框架、构建链或外部字体/图片依赖**；继续用 FastAPI 服务端渲染 + 纯 CSS。若必须偏离 DESIGN.md，先在回复里说明缺口，得到用户确认后再做。
 - 不要修改 `DESIGN.md`，除非用户明确要求更新设计规范。
 
 UI 改动完成前至少验证：
@@ -39,8 +33,8 @@ UI 改动完成前至少验证：
 
 ```bash
 uv run python scripts/preview_dashboard.py
-# http://127.0.0.1:8099/dashboard
-# Basic Auth: admin / preview2026
+# http://127.0.0.1:8099/login
+# 用户名 admin / 密码 preview2026
 ```
 
 ## 1. 项目结构与边界
@@ -55,11 +49,11 @@ uv run python scripts/preview_dashboard.py
 ## 2. 安全红线
 
 - 不提交、不回显、不写日志：GitLab token、模型 key、admin token、Dashboard 密码。
-- Dashboard 使用 HTTP Basic；密码为空时**关闭页面**（fail closed），不要生成默认密码。
+- Dashboard 使用签名 HttpOnly session cookie；密码为空时**关闭页面**（fail closed），不要生成默认密码。
 - 所有外部文本（项目路径、issue 标题、失败原因、事件 detail）进 HTML 前必须转义。
 - `/healthz` 保持信息最少；任务详情只走受保护的 `/tasks` 或 `/dashboard`。
 - 只读页面不要偷偷加写操作；操作能力必须先设计权限、CSRF、审计和幂等。
-- 不把 Basic 凭据放进 URL、Cookie、localStorage 或日志。
+- 不把登录凭据放进 URL、localStorage 或日志；session cookie 只放签名后的用户名与过期时间。
 
 ## 3. 开发与测试
 
@@ -87,7 +81,8 @@ uv run --frozen pytest -q
 
 ## 5. 当前已知的 UI 上下文
 
-- `/dashboard` 是只读观测台：HTTP Basic、单实例 SQLite、手动刷新、无重试/取消/手动触发。
+- `/dashboard` 是只读观测台：登录页 + session、单实例 SQLite、手动刷新、无重试/取消/手动触发。
+- `/setup` 只在未初始化时开放；`/settings` 登录后可改基础/高级配置，保存后重启生效。
 - `/tasks` 是 token 保护的只读任务页；两者的鉴权不要混用。
 - Dashboard 的视觉规范以 `DESIGN.md` 为准；`core/dashboard_view.py` 中的 CSS
   变量应从 DESIGN.md 的 token 映射而来。
