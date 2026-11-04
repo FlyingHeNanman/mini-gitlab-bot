@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     sweep_interval_sec: float = 1800.0
     #: 补偿巡检：扫「open 且无 状态： 标签」的 issue，补建 triage
     sweep_triage_enabled: bool = True
-    #: commit 引用回收：识别 Closes/Fixes/Resolves #N，回帖并关闭
+    #: commit 引用回收：识别 Closes/Fixes/Resolves #N，回帖；open 时关闭，已 closed 补标记
     sweep_resolve_enabled: bool = True
     sweep_triage_scan_limit: int = 100
     sweep_min_body_chars: int = 10

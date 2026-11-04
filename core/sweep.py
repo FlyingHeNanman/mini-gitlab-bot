@@ -5,7 +5,9 @@
 1. **补偿巡检**：webhook 可能漏投（GitLab 连续失败 4 次就临时禁用），所以周期扫
    「open 且没有任何 `状态：` 标签」的 issue，按配额补建 triage 任务。
 2. **commit 引用回收**：扫默认分支近期的提交，识别 `Closes/Fixes/Resolves #N`，
-   对仍然 open 的 issue 回帖「已在哪个提交修复」、打 `状态：已解决` 并关闭。
+   对 issue 回帖「已在哪个提交修复」、打 `状态：已解决` 并关闭。
+   同时扫描近期 **closed** issue：GitLab 默认 autoclose 会先关闭 issue，机器人
+   仍补回帖与标签；已处理过的靠评论 marker 幂等跳过。
 
 为什么不是每次 webhook 都查一遍：issue 数量与提交数量都会增长，周期扫描天然限流；
 `状态：` 标签与评论 marker 让重跑幂等（重跑只会更新同一条评论，不会刷屏）。
@@ -72,6 +74,11 @@ def render_resolution_comment(
     short = (commit.sha or "")[:8] or "unknown"
     reference = f"[`{short}`]({commit.web_url})" if commit.web_url else f"`{short}`"
     title = commit.title or (commit.message.splitlines()[0] if commit.message else "")
+    if issue.state == "opened":
+        action = "机器人已把它标记为 `状态：已解决` 并关闭。"
+    else:
+        # GitLab autoclose（或人工关闭）后 issue 不再是 open；机器人只补标签和说明
+        action = "GitLab 已关闭该 issue；机器人已补上 `状态：已解决` 和解决说明。"
     return "\n".join(
         [
             resolution_marker(issue.iid),
@@ -82,7 +89,7 @@ def render_resolution_comment(
             "",
             f"> {title}",
             "",
-            "机器人已把它标记为 `状态：已解决` 并关闭。",
+            action,
             "如果问题仍然存在，直接重新打开这个 issue 即可。",
             "",
             f"<sub>扫描时间 {_date(now)}</sub>",
@@ -188,7 +195,23 @@ class Sweeper:
 
             resolved_here: set[int] = set()
             if self._settings.resolve_enabled:
-                done, error = await self._sweep_resolution(project, issues, now)
+                closed: tuple[IssueSummary, ...] = ()
+                try:
+                    # GitLab 默认 autoclose：带 Closes/Fixes 的提交推默认分支后会先把
+                    # issue 关掉。只扫 open issue 会永远看不到它，因此把近期 closed 的
+                    # issue 也纳入解析；是否已处理由评论 marker 判断。
+                    closed = await self._scm.list_closed_issues(
+                        project,
+                        since=now - timedelta(days=self._settings.commit_lookback_days),
+                        limit=self._settings.commit_scan_limit,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{path}: list_closed_issues: {type(exc).__name__}: {exc}")
+                    logger.warning("周期扫描读取 %s 的 closed issue 失败：%s", path, exc)
+
+                candidates: dict[int, IssueSummary] = {issue.iid: issue for issue in closed}
+                candidates.update({issue.iid: issue for issue in issues})  # open 优先
+                done, error = await self._sweep_resolution(project, tuple(candidates.values()), now)
                 resolved.extend(done)
                 resolved_here = {issue_iid for issue_iid, _ in done}
                 if error:
@@ -284,8 +307,10 @@ class Sweeper:
     async def _sweep_resolution(
         self, project: ProjectRef, issues: Sequence[IssueSummary], now: datetime
     ) -> tuple[list[tuple[int, str]], str | None]:
-        open_by_iid = {issue.iid: issue for issue in issues if issue.state == "opened"}
-        if not open_by_iid:
+        candidate_by_iid = {
+            issue.iid: issue for issue in issues if issue.state in ("opened", "closed")
+        }
+        if not candidate_by_iid:
             return [], None
         try:
             branch = await self._scm.default_branch(project)
@@ -303,15 +328,41 @@ class Sweeper:
         referenced: dict[int, CommitInfo] = {}
         for commit in commits:
             for issue_iid in commit_references(commit.message):
-                if issue_iid in open_by_iid and issue_iid not in referenced:
+                if issue_iid in candidate_by_iid and issue_iid not in referenced:
                     referenced[issue_iid] = commit
 
         resolved: list[tuple[int, str]] = []
         failures: list[str] = []
         for issue_iid, commit in referenced.items():
-            issue = open_by_iid[issue_iid]
+            issue = candidate_by_iid[issue_iid]
             if labels.SKIP_LABEL in issue.labels:
                 continue
+            if issue.state == "closed":
+                # closed issue 会留在近期列表里；靠 marker 幂等，避免每轮重复计数/刷评论。
+                task = _ephemeral_task(project, issue_iid, now=now)
+                try:
+                    existing = await self._scm.find_comment(
+                        task, marker=resolution_marker(issue_iid)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("检查 issue #%s 的已解决评论失败：%s", issue_iid, exc)
+                    failures.append(f"{project.path}: find_comment issue #{issue_iid}: {exc}")
+                    continue
+                if existing is not None:
+                    # 评论在、状态标签被人删了：补标签，不重复回帖、不重复计数
+                    if labels.STATUS_RESOLVED not in issue.labels:
+                        try:
+                            remove = labels.exclusive_removals(
+                                issue.labels, keep=labels.STATUS_RESOLVED
+                            )
+                            await self._scm.set_labels(
+                                task, add=(labels.STATUS_RESOLVED,), remove=remove
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            failures.append(
+                                f"{project.path}: repair labels issue #{issue_iid}: {exc}"
+                            )
+                    continue
             try:
                 await self._resolve_issue(project, issue, commit, now)
             except Exception as exc:  # noqa: BLE001
@@ -319,11 +370,18 @@ class Sweeper:
                 failures.append(f"{project.path}: resolve issue #{issue_iid}: {exc}")
                 continue
             resolved.append((issue_iid, commit.sha))
-            logger.info(
-                "issue #%s 已由提交 %s 修复，已回帖并关闭",
-                issue_iid,
-                (commit.sha or "")[:8],
-            )
+            if issue.state == "closed":
+                logger.info(
+                    "issue #%s 已由提交 %s 修复（GitLab 已关闭，补回帖并打标签）",
+                    issue_iid,
+                    (commit.sha or "")[:8],
+                )
+            else:
+                logger.info(
+                    "issue #%s 已由提交 %s 修复，已回帖并关闭",
+                    issue_iid,
+                    (commit.sha or "")[:8],
+                )
         return resolved, ("；".join(failures) if failures else None)
 
     async def _resolve_issue(
@@ -341,4 +399,5 @@ class Sweeper:
             render_resolution_comment(issue, commit, now=now),
             marker=resolution_marker(issue.iid),
         )
-        await self._scm.close_issue(task)
+        if issue.state == "opened":
+            await self._scm.close_issue(task)

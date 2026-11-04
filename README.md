@@ -35,7 +35,7 @@
 > **新 issue 自动巡检 → 打类型/严重度/组件标签 → 人工打 `机器人：修复` → 拉代码 → 装依赖 → AI 改代码 → 跑测试 → 推分支 → 开 draft MR → 回帖告诉你结果**
 
 合并永远由人决定。机器人的产出是 issue 上的**巡检结论 + 状态评论**，以及（人工确认后）一个 **draft MR**；
-  另有两条兜底链路：**周期扫描**补做漏投的巡检、识别 `Closes/Fixes/Resolves #N` 自动回帖并关闭，**Tag Push** 后按提交分类补 GitLab Release 说明。
+  另有两条兜底链路：**周期扫描**补做漏投的巡检、识别 `Closes/Fixes/Resolves #N` 自动回帖（open 时关闭；GitLab 已 autoclose 则补标记），**Tag Push** 后按提交分类补 GitLab Release 说明。
 
 ## 一次完整的闭环
 
@@ -194,7 +194,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 | `MIN_ACCESS_LEVEL` | 触发者角色下限（Developer = 30） | `30` |
 | `TRIAGE_ENABLED` | 新 issue 自动巡检（排查/打中文标签/回帖） | `true` |
 | `SWEEP_ENABLED` / `SWEEP_INTERVAL_SEC` | 周期扫描总开关 / 间隔秒数 | `true` / `1800` |
-| `SWEEP_RESOLVE_ENABLED` | 用 commit 引用自动回帖并关闭 issue | `true` |
+| `SWEEP_RESOLVE_ENABLED` | 用 commit 引用自动回帖；open issue 同时关闭，已 closed 则补标签/评论 | `true` |
 | `RELEASE_ENABLED` | Tag Push 自动补 GitLab Release | `true` |
 | `RELEASE_LOOKBACK_DAYS` | 首个 tag 回退多少天提交来生成说明 | `365` |
 | `ALLOWED_TRIGGER_USERS` | 可选额外白名单（与角色下限是 AND） | 空 |
@@ -216,7 +216,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 635 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 640 项，无需 GitLab / 无需 LLM
 ```
 
 测试分层：
@@ -259,12 +259,12 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 635 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 640 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
 | 自动修（真件） | ✅ 巡检判定 eligible → 内部派生 fix → 真 codex 修复 → draft MR（父任务链、draft、Closes 均验证） |
 | 重复/指派 | ✅ 高置信重复关联并关闭；CODEOWNERS 命中即指派；GitLab assign/link/close API 已真机验证 |
 | 合并解释（真件） | ✅ 真 GitLab MR merge → 不 clone、只看 diff → 真 codex 解释评论 + 状态：已合并 |
-| 周期扫描 / 自动关闭 | ✅ 真 GitLab CE 19.5.3（关闭 autoclose 后）：commit 引用 → 回帖/`状态：已解决`/关闭，评论幂等；**默认 autoclose 下 GitLab 会先关闭，机器人扫不到** |
+| 周期扫描 / 自动关闭 | ✅ 真 GitLab CE 19.5.3：open issue → 回帖/`状态：已解决`/关闭；GitLab autoclose 先关闭时，近期 closed issue 也会补回帖/标签，marker 幂等 |
 | 自动 Release | ✅ 真 GitLab CE 19.5.3：Tag Push → Release、previous tag compare、修复/新功能分组；已有 Release 跳过由假件覆盖 |
 | 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
 | 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |
@@ -273,7 +273,7 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 | 非 Python 项目 | ❌ 未支持（首期只做 uv 管理的 Python 项目） |
 | 非 GitLab 平台 | ❌ 未支持（GitHub/Gitea 只是端口层面的可能性） |
 | 其他 GitLab 版本 | ⚠️ 只验证过 19.5；16/17/18 未逐一测试 |
-| GitLab 默认自动关闭 | ⚠️ `autoclose_referenced_issues=true`（默认）时，`Closes #N` 提交推默认分支后 GitLab 先关闭 issue，周期扫描看不到；要机器人回帖需在项目设置关闭该选项，或后续扩展扫描近期 closed issue |
+| GitLab 默认自动关闭 | ✅ 已兼容：`autoclose_referenced_issues=true` 时 GitLab 先关闭，sweep 扫近期 closed issue 补回帖/标签，不重复处理 |
 
 ## 文档
 

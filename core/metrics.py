@@ -24,7 +24,7 @@ _DEFINITIONS: dict[str, tuple[str, str]] = {
     "janitor_removed_total": ("counter", "保留策略删除的对象数（按类型）"),
     "sweep_runs_total": ("counter", "周期扫描执行次数"),
     "sweep_triaged_total": ("counter", "周期扫描补建的 triage 任务数"),
-    "sweep_resolved_total": ("counter", "commit 引用回收自动关闭的 issue 数"),
+    "sweep_resolved_total": ("counter", "commit 引用回收处理的 issue 数"),
     "sweep_errors_total": ("counter", "周期扫描错误数"),
     "release_total": ("counter", "Release 任务处理次数"),
     "release_skipped_total": ("counter", "Release 已存在而跳过的次数"),

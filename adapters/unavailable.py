@@ -56,6 +56,11 @@ class UnavailableSCM:
     ) -> tuple[IssueSummary, ...]:
         self._boom()
 
+    async def list_closed_issues(
+        self, project: ProjectRef, *, since: datetime, limit: int = 100
+    ) -> tuple[IssueSummary, ...]:
+        self._boom()
+
     async def list_recent_commits(
         self, project: ProjectRef, *, ref: str, since: datetime, limit: int = 50
     ) -> tuple[CommitInfo, ...]:
@@ -95,6 +100,9 @@ class UnavailableSCM:
         self._boom()
 
     async def upsert_comment(self, task: Task, body: str, *, marker: str) -> int:
+        self._boom()
+
+    async def find_comment(self, task: Task, *, marker: str) -> int | None:
         self._boom()
 
     async def create_draft_mr(

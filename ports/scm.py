@@ -42,6 +42,12 @@ class SCM(Protocol):
         """项目里所有 open issue 的摘要（周期扫描 / 补偿巡检用）。"""
         ...
 
+    async def list_closed_issues(
+        self, project: ProjectRef, *, since: datetime, limit: int = 100
+    ) -> tuple[IssueSummary, ...]:
+        """`updated_at >= since` 的 closed issue（GitLab autoclose 后补回帖用）。"""
+        ...
+
     async def list_recent_commits(
         self, project: ProjectRef, *, ref: str, since: datetime, limit: int = 50
     ) -> tuple[CommitInfo, ...]:
@@ -98,6 +104,10 @@ class SCM(Protocol):
 
     async def upsert_comment(self, task: Task, body: str, *, marker: str) -> int:
         """按 marker 原地编辑状态评论；不存在则新建。返回 comment id。"""
+        ...
+
+    async def find_comment(self, task: Task, *, marker: str) -> int | None:
+        """按 marker 查已有评论；closed issue 的幂等判断用，不存在返回 None。"""
         ...
 
     async def create_draft_mr(

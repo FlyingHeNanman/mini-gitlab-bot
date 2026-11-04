@@ -93,6 +93,18 @@ def _tag_web_url(name: str, commit: Any) -> str:
     return f"{base}/-/tags/{quote(name, safe='')}"
 
 
+def _issue_summary(issue: Any) -> IssueSummary:
+    return IssueSummary(
+        iid=int(_field(issue, "iid", 0) or 0),
+        title=str(_field(issue, "title") or ""),
+        labels=tuple(_field(issue, "labels", None) or ()),
+        state=str(_field(issue, "state", "opened") or "opened"),
+        web_url=str(_field(issue, "web_url") or ""),
+        description=str(_field(issue, "description") or ""),
+        updated_at=_parse_dt(_field(issue, "updated_at")),
+    )
+
+
 def _tag_info(tag: Any) -> TagInfo:
     commit = getattr(tag, "commit", None) or {}
     if isinstance(commit, dict):
@@ -178,6 +190,17 @@ class GitLabSCM:
             "读取 open issues", self._list_open_issues, project.project_id, limit
         )
 
+    async def list_closed_issues(
+        self, project: ProjectRef, *, since: datetime, limit: int = 100
+    ) -> tuple[IssueSummary, ...]:
+        return await self._run(
+            "读取 closed issues",
+            self._list_closed_issues,
+            project.project_id,
+            since,
+            limit,
+        )
+
     async def list_recent_commits(
         self, project: ProjectRef, *, ref: str, since: datetime, limit: int = 50
     ) -> tuple[CommitInfo, ...]:
@@ -255,6 +278,9 @@ class GitLabSCM:
     async def upsert_comment(self, task: Task, body: str, *, marker: str) -> int:
         return await self._run("写状态评论", self._upsert_comment, task, body, marker)
 
+    async def find_comment(self, task: Task, *, marker: str) -> int | None:
+        return await self._run("查找评论", self._find_comment, task, marker)
+
     async def create_draft_mr(
         self,
         task: Task,
@@ -311,18 +337,21 @@ class GitLabSCM:
             sort="asc",
             iterator=False,
         )
-        return tuple(
-            IssueSummary(
-                iid=int(getattr(issue, "iid", 0)),
-                title=str(getattr(issue, "title", "") or ""),
-                labels=tuple(getattr(issue, "labels", None) or ()),
-                state=str(getattr(issue, "state", "opened") or "opened"),
-                web_url=str(getattr(issue, "web_url", "") or ""),
-                description=str(getattr(issue, "description", "") or ""),
-                updated_at=_parse_dt(getattr(issue, "updated_at", None)),
-            )
-            for issue in issues
+        return tuple(_issue_summary(issue) for issue in issues)
+
+    def _list_closed_issues(
+        self, project_id: int, since: datetime, limit: int
+    ) -> tuple[IssueSummary, ...]:
+        project = self._get_project(project_id)
+        issues = project.issues.list(
+            state="closed",
+            updated_after=since.astimezone(UTC).isoformat(),
+            per_page=limit,
+            order_by="updated_at",
+            sort="desc",
+            iterator=False,
         )
+        return tuple(_issue_summary(issue) for issue in issues)
 
     def _list_recent_commits(
         self, project_id: int, ref: str, since: datetime, limit: int
@@ -525,6 +554,21 @@ class GitLabSCM:
                 return int(note.id)
         created = issue.notes.create({"body": body})
         return int(created.id)
+
+    def _find_comment(self, task: Task, marker: str) -> int | None:
+        issue = self._get_project(task.project.project_id).issues.get(task.issue_iid)
+        scanned = 0
+        for note in issue.notes.list(
+            iterator=True, per_page=100, sort="desc", order_by="created_at"
+        ):
+            scanned += 1
+            if scanned > NOTE_SCAN_LIMIT:  # pragma: no cover - 防御性
+                break
+            if getattr(note, "system", False):
+                continue
+            if marker and marker in (getattr(note, "body", "") or ""):
+                return int(note.id)
+        return None
 
     def _create_mr(
         self,

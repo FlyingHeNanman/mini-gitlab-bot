@@ -71,6 +71,20 @@ def test_resolution_comment_has_marker() -> None:
     assert "状态：已解决" in body
 
 
+def test_resolution_comment_for_already_closed_issue_does_not_claim_bot_closed_it() -> None:
+    issue = IssueSummary(iid=12, title="空标签返回 None", state="closed")
+    commit = CommitInfo(
+        sha="abcdef123456",
+        title="fix: 空标签返回 []",
+        message="Fixes #12",
+        created_at=NOW - timedelta(hours=1),
+    )
+    body = render_resolution_comment(issue, commit, now=NOW)
+    assert resolution_marker(12) in body
+    assert "GitLab 已关闭该 issue" in body
+    assert "机器人已补上 `状态：已解决`" in body
+
+
 # --------------------------------------------------------------------------- #
 # 补偿巡检
 # --------------------------------------------------------------------------- #
@@ -204,7 +218,7 @@ async def test_sweep_resolution_creates_missing_status_label(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sweep_resolution_ignores_skip_label_and_closed_issue(tmp_path) -> None:
+async def test_sweep_resolution_ignores_skip_label(tmp_path) -> None:
     clock = Clock(NOW)
     store = SqliteStore(tmp_path / "tasks.db")
     commit = CommitInfo(
@@ -224,6 +238,88 @@ async def test_sweep_resolution_ignores_skip_label_and_closed_issue(tmp_path) ->
     report = await sweeper.run_once()
     assert report.resolved == ((14, commit.sha),)
     assert 13 not in scm.closed_issue_iids
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_sweep_resolution_handles_gitlab_autoclosed_issue_idempotently(tmp_path) -> None:
+    """GitLab autoclose 后 issue 已 closed；机器人仍补回帖/标签，且不重复计数。"""
+    clock = Clock(NOW)
+    store = SqliteStore(tmp_path / "tasks.db")
+    commit = CommitInfo(
+        sha="feedface1234",
+        title="fix: 自动关闭场景",
+        message="Fixes #41",
+        created_at=NOW - timedelta(hours=1),
+    )
+    closed = IssueSummary(
+        iid=41,
+        title="GitLab 已自动关闭",
+        description="x",
+        state="closed",
+        updated_at=NOW - timedelta(hours=2),
+    )
+    scm = FakeSCM(closed_issue_summaries=[closed], recent_commits=[commit])
+    sweeper = make_sweeper(store, scm, clock=clock)
+
+    first = await sweeper.run_once()
+    assert first.resolved == ((41, commit.sha),)
+    assert 41 not in scm.closed_issue_iids  # 已经是 closed，不再调 close
+    assert labels.STATUS_RESOLVED in scm.closed_issue_summaries[0].labels
+    assert len(scm.comments) == 1
+    assert "GitLab 已关闭该 issue" in scm.comments[0]["body"]
+
+    second = await sweeper.run_once()
+    assert second.resolved == ()
+    assert len(scm.comments) == 1
+    assert scm.comments[0]["revisions"] == 1
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_sweep_ignores_old_closed_issue_outside_lookback(tmp_path) -> None:
+    clock = Clock(NOW)
+    store = SqliteStore(tmp_path / "tasks.db")
+    commit = CommitInfo(
+        sha="abcdef123456",
+        title="fix: old",
+        message="Fixes #42",
+        created_at=NOW - timedelta(days=30),
+    )
+    closed = IssueSummary(
+        iid=42,
+        title="很久以前关闭",
+        description="x",
+        state="closed",
+        updated_at=NOW - timedelta(days=30),
+    )
+    scm = FakeSCM(closed_issue_summaries=[closed], recent_commits=[commit])
+    sweeper = make_sweeper(store, scm, clock=clock)
+    report = await sweeper.run_once()
+    assert report.resolved == ()
+    assert scm.comments == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_closed_issue_scan_failure_does_not_block_open_resolution(tmp_path) -> None:
+    clock = Clock(NOW)
+    store = SqliteStore(tmp_path / "tasks.db")
+    commit = CommitInfo(
+        sha="abc123456789",
+        title="fix: x",
+        message="Fixes #43",
+        created_at=NOW,
+    )
+    scm = FakeSCM(
+        open_issues=[IssueSummary(iid=43, title="open", description="x")],
+        recent_commits=[commit],
+        fail_on=("list_closed_issues",),
+    )
+    sweeper = make_sweeper(store, scm, clock=clock)
+    report = await sweeper.run_once()
+    assert report.resolved == ((43, commit.sha),)
+    assert any("list_closed_issues" in error for error in report.errors)
     store.close()
 
 

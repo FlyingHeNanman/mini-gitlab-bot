@@ -329,7 +329,7 @@ AUTOFIX_ENABLED=true（默认开）且全部满足：
 | `状态：自动修复中` | fix 运行中 | `#F9D0C4` |
 | `状态：待审批` | draft MR 已开，等人工审批 | `#BFD4F2` |
 | `状态：已合并` | MR 已合并，解释评论已发布 | `#0E8A16` |
-| `状态：已解决` | commit 引用已修复；机器人已回帖并关闭 | `#1A7F37` |
+| `状态：已解决` | commit 引用已修复；机器人已回帖并标记（open 时关闭） | `#1A7F37` |
 | `状态：已关闭重复` | 高置信重复，已关联并关闭 | `#CFD3D7` |
 | `状态：已关闭非缺陷` | 不成立 / 已实现 / 长期无法复现 | `#CFD3D7` |
 | `状态：处理失败` | 机器人自身失败（环境/模型/GitLab 调用） | `#D93F0B` |
@@ -510,7 +510,7 @@ def group_of(name: str) -> str | None:
 
 | 里程碑 | 内容 | 判据 |
 | --- | --- | --- |
-| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 635 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
+| **M6 Runner + triage** | 场景骨架、5 态、上下文预取、标签创建、巡检评论 | 假件 640 项 + 真 GitLab 19.5.3/真 codex 0.166 一个 issue 通过（含重开幂等、脏改告警） |
 | **M7 自动修 + 指派** | 裁决、内部 enqueue、组件映射（CODEOWNERS / 顶层目录） | 自动修真机验证（draft MR）；CODEOWNERS 指派、重复关闭已落地（假件） |
 | **M8 解释响应** | merge 事件、diff 读取、解释评论、标签流转 | 假件全链路 + 真 GitLab MR merge/真 codex 解释通过（含分阶段模型、配额） |
 | **M9（可选）** | 真验证（复跑 repro / 回归测试）＋ fix 迁到 Runner | 446 项测试等价迁移；真实验证一次通过、一次失败 |
@@ -537,11 +537,12 @@ def group_of(name: str) -> str | None:
 每个 `SWEEP_INTERVAL_SEC`（默认 1800s）对每个白名单项目执行两件事：
 
 1. **补偿巡检**：`list_open_issues` 取 open issue，跳过 `机器人：跳过`、正文过短、已有任一 `状态：` 标签的；按项目每小时 `TRIAGE_QUOTA_PER_HOUR` 限流，补建 `TriggerKind.SWEEP` 的 triage 任务。delivery key 带秒级时间戳，同一秒重跑不会重复入队。
-2. **commit 引用回收**：读取默认分支最近 `SWEEP_COMMIT_LOOKBACK_DAYS` 天提交，用 `Closes/Fixes/Resolves #N`（支持 `#1, #2` / `#1 and #2`，大小写不敏感）解析引用；对仍 open 的 issue 按「新提交优先」取最新引用：
-   - 打 `状态：已解决`（移除其他状态标签）；
-   - upsert 一条带 `<!-- mini-gitlab-bot:resolved #N -->` marker 的评论，写明提交短 sha、标题、日期；
-   - 调 `close_issue`。
-   - 不检查 `状态：` 标签，保证「上次评论成功但关闭失败」可以重试；关闭成功的 issue 不再出现在 open 列表，天然幂等。
+2. **commit 引用回收**：读取默认分支最近 `SWEEP_COMMIT_LOOKBACK_DAYS` 天提交，用 `Closes/Fixes/Resolves #N`（支持 `#1, #2` / `#1 and #2`，大小写不敏感）解析引用；按「新提交优先」取最新引用：
+   - 同时取 `list_open_issues` 的 open issue 和 `list_closed_issues`（`updated_after` 在窗口内）的近期 closed issue；
+   - 对 open issue：打 `状态：已解决`（移除其他状态标签）、upsert marker 评论、调 `close_issue`；
+   - 对 GitLab autoclose 已关闭的 issue：只补 `状态：已解决` 和 marker 评论，不再调 `close_issue`；
+   - closed issue 会留在近期列表，用 `find_comment(marker)` 判断是否已处理，已处理则跳过，避免每轮重复计数/刷评论；
+   - 不检查 `状态：` 标签，保证「上次评论成功但关闭失败」可以重试。
 
 失败按项目隔离：单个项目读取/写失败只记 `errors` 与日志，不拖垮整轮；`SweepReport` 记录补建数、回收数、配额跳过与错误。
 
@@ -560,4 +561,5 @@ def group_of(name: str) -> str | None:
 
 - 纯函数：关闭关键字解析（含组合写法）、评论 marker、Conventional 分类、小节渲染、相邻 tag 查找。
 - 端到端假件：sweep → triage worker → 标签/评论；tag push → HTTP 入队 → release worker → GitLab Release。
-- 真 HTTP 桩：GitLab 新增 `resolve_project` / `list_open_issues` / `list_recent_commits` / `list_tags` / `compare_commits` / `get_release` / `create_release` 的请求形状与幂等分支。
+- 真 HTTP 桩：GitLab 新增 `resolve_project` / `list_open_issues` / `list_closed_issues` / `list_recent_commits` / `list_tags` / `compare_commits` / `get_release` / `create_release` / `find_comment` 的请求形状与幂等分支。
+- 真机：默认 `autoclose_referenced_issues=true` 下，GitLab 先关闭后机器人仍补回帖/标签，重启不重复。

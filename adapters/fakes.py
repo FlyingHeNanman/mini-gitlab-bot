@@ -75,6 +75,7 @@ class FakeSCM:
         fail_on: Sequence[str] = (),
         project_refs: Mapping[str, ProjectRef] | None = None,
         open_issues: Sequence[IssueSummary] = (),
+        closed_issue_summaries: Sequence[IssueSummary] = (),
         recent_commits: Sequence[CommitInfo] = (),
         tags: Sequence[TagInfo] = (),
         commits_between: Mapping[tuple[str, str], Sequence[CommitInfo]] | None = None,
@@ -92,6 +93,7 @@ class FakeSCM:
         self.fail_on = set(fail_on)
         self.project_refs = dict(project_refs or {})
         self.open_issues = list(open_issues)
+        self.closed_issue_summaries = list(closed_issue_summaries)
         self.recent_commits = list(recent_commits)
         self.tags = list(tags)
         self.commits_between = {key: tuple(value) for key, value in (commits_between or {}).items()}
@@ -134,6 +136,16 @@ class FakeSCM:
     ) -> tuple[IssueSummary, ...]:
         self._maybe_fail("list_open_issues")
         return tuple(self.open_issues[:limit])
+
+    async def list_closed_issues(
+        self, project: ProjectRef, *, since: datetime, limit: int = 100
+    ) -> tuple[IssueSummary, ...]:
+        self._maybe_fail("list_closed_issues")
+        return tuple(
+            issue
+            for issue in self.closed_issue_summaries
+            if issue.state == "closed" and (issue.updated_at is None or issue.updated_at >= since)
+        )[:limit]
 
     async def list_recent_commits(
         self, project: ProjectRef, *, ref: str, since: datetime, limit: int = 50
@@ -213,21 +225,22 @@ class FakeSCM:
         self.label_changes.append((tuple(add), tuple(remove)))
         self.current_labels -= set(remove)
         self.current_labels |= set(add)
-        for index, issue in enumerate(self.open_issues):
-            if issue.iid != task.issue_iid:
-                continue
-            labels = set(issue.labels)
-            labels -= set(remove)
-            labels |= set(add)
-            self.open_issues[index] = IssueSummary(
-                iid=issue.iid,
-                title=issue.title,
-                labels=tuple(sorted(labels)),
-                state=issue.state,
-                web_url=issue.web_url,
-                description=issue.description,
-                updated_at=issue.updated_at,
-            )
+        for items in (self.open_issues, self.closed_issue_summaries):
+            for index, issue in enumerate(items):
+                if issue.iid != task.issue_iid:
+                    continue
+                labels = set(issue.labels)
+                labels -= set(remove)
+                labels |= set(add)
+                items[index] = IssueSummary(
+                    iid=issue.iid,
+                    title=issue.title,
+                    labels=tuple(sorted(labels)),
+                    state=issue.state,
+                    web_url=issue.web_url,
+                    description=issue.description,
+                    updated_at=issue.updated_at,
+                )
 
     async def upsert_comment(self, task: Task, body: str, *, marker: str) -> int:
         self._maybe_fail("upsert_comment")
@@ -239,6 +252,13 @@ class FakeSCM:
         comment = {"id": len(self.comments) + 1, "marker": marker, "body": body, "revisions": 1}
         self.comments.append(comment)
         return int(comment["id"])
+
+    async def find_comment(self, task: Task, *, marker: str) -> int | None:
+        self._maybe_fail("find_comment")
+        for comment in self.comments:
+            if comment["marker"] == marker:
+                return int(comment["id"])
+        return None
 
     async def create_draft_mr(
         self,

@@ -81,6 +81,7 @@ class StubState:
         labels: list[str] | None = None,
         author: str = "reporter",
         state: str = "opened",
+        updated_at: str = "2026-10-17T09:30:00.000Z",
     ) -> None:
         self.issues[iid] = {
             "id": 1000 + iid,
@@ -93,7 +94,7 @@ class StubState:
             "web_url": f"https://gitlab.example.com/{self.project.path}/-/issues/{iid}",
             "author": {"username": author, "name": author},
             "created_at": "2026-10-17T09:00:00.000Z",
-            "updated_at": "2026-10-17T09:30:00.000Z",
+            "updated_at": updated_at,
         }
         self.notes.setdefault(iid, [])
 
@@ -377,6 +378,15 @@ class _Handler(BaseHTTPRequestHandler):
                 ]
             if "state" in query:
                 items = [item for item in items if item["state"] == query["state"][0]]
+            if "updated_after" in query:
+                cutoff = datetime.fromisoformat(
+                    str(query["updated_after"][0]).replace("Z", "+00:00")
+                )
+                items = [
+                    item
+                    for item in items
+                    if datetime.fromisoformat(item["updated_at"].replace("Z", "+00:00")) >= cutoff
+                ]
             limit = int(query.get("per_page", ["20"])[0])
             self._send(200, items[:limit])
             return

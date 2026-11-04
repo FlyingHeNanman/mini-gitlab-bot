@@ -154,6 +154,8 @@ async def test_upsert_comment_creates_then_edits_the_same_note(
     second = await scm.upsert_comment(make_task(), f"{marker}\n已完成", marker=marker)
 
     assert first == second
+    assert await scm.find_comment(make_task(), marker=marker) == first
+    assert await scm.find_comment(make_task(), marker="<!-- missing -->") is None
     notes = stub.state.notes[ISSUE]
     assert len(notes) == 1  # 只有一条被反复编辑
     assert notes[0]["body"].endswith("已完成")
@@ -345,6 +347,28 @@ async def test_list_open_issues_asks_for_opened_only(stub: StubGitLab, scm: GitL
     request = next(item for item in stub.state.requests if "/issues?" in item["path"])
     assert request["query"]["state"] == ["opened"]
     assert request["query"]["per_page"] == ["50"]
+
+
+async def test_list_closed_issues_uses_updated_after_and_state(
+    stub: StubGitLab, scm: GitLabSCM
+) -> None:
+    stub.state.add_issue(
+        30, title="近期关闭", state="closed", updated_at="2026-10-20T00:00:00.000Z"
+    )
+    stub.state.add_issue(
+        31, title="很久前关闭", state="closed", updated_at="2026-10-01T00:00:00.000Z"
+    )
+    issues = await scm.list_closed_issues(
+        ProjectRef(project_id=PROJECT_ID, path="group/project-a"),
+        since=datetime(2026, 10, 10, tzinfo=UTC),
+        limit=50,
+    )
+    assert [item.iid for item in issues] == [30]
+    request = next(item for item in stub.state.requests if "/issues?" in item["path"])
+    assert request["query"]["state"] == ["closed"]
+    assert request["query"]["updated_after"][0].startswith("2026-10-10")
+    assert request["query"]["order_by"] == ["updated_at"]
+    assert request["query"]["sort"] == ["desc"]
 
 
 async def test_list_recent_commits_passes_since_and_ref(stub: StubGitLab, scm: GitLabSCM) -> None:
