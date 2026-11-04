@@ -2,6 +2,19 @@
 
 本项目的所有重要变更都记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-11-04
+
+### 新增
+
+- **只读 Dashboard**（`GET /dashboard`）：HTTP Basic 鉴权；总览健康/队列/24h 统计、最近任务、失败中心、项目聚合与 sweep/release 进程指标；手动刷新，不提供重试/取消/手动触发。当前实例只看自己的 SQLite。
+- **Dashboard 视觉规范**：按 `DESIGN.md` 的 Apple 式产品画廊语言重做界面——深黑 global nav、parchment 磨砂 sub-nav、浅色/深色 tile 交替、Action Blue 单一交互强调色、SF Pro 字体层级、pill CTA 与无阴影 utility card。
+- **任务详情**：`/dashboard/task/{id}` 展示任务档案、失败证据、事件时间线与日志尾部。
+- **协作与预览**：新增 `AGENTS.md`（UI 必须遵循 `DESIGN.md`）与 `scripts/preview_dashboard.py`；本地可起带样例数据的预览，不依赖真 GitLab。
+
+### 测试
+
+- 全量 **655 项**测试通过，`ruff check` / `ruff format --check` 干净；覆盖 Basic Auth、只读边界、HTML 转义、SQLite 汇总与 DESIGN token 约束。
+
 ## [0.2.1] - 2026-11-04
 
 ### 修复

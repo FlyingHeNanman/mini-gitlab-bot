@@ -1,6 +1,6 @@
 [project]
 name = "mini-gitlab-bot"
-version = "0.2.1"
+version = "0.3.0"
 description = "内网自托管 GitLab 的轻量仓库维护机器人（Python 网关）"
 readme = "README.md"
 requires-python = ">=3.13"

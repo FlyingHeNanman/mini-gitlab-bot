@@ -23,8 +23,10 @@ from uuid import uuid4
 
 from core.models import (
     UPDATABLE_FIELDS,
+    DashboardStats,
     EnqueueOutcome,
     ProjectRef,
+    ProjectSummary,
     ReapOutcome,
     Task,
     TaskEvent,
@@ -394,6 +396,69 @@ class SqliteStore:
             (project_id, kind.value, _iso(since)),
         )
         return int(row["n"]) if row else 0
+
+    def dashboard_stats(self, *, since: datetime) -> DashboardStats:
+        """总览计数：全量状态分布 + `since` 之后的新增/成功/失败。"""
+        row = self._fetch_one(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN state IN {_ACTIVE_SQL} THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN state='queued' THEN 1 ELSE 0 END) AS queued,
+                SUM(CASE WHEN state='succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN created_at>=? THEN 1 ELSE 0 END) AS created_since,
+                SUM(CASE WHEN created_at>=? AND state='succeeded' THEN 1 ELSE 0 END)
+                    AS succeeded_since,
+                SUM(CASE WHEN created_at>=? AND state='failed' THEN 1 ELSE 0 END)
+                    AS failed_since
+            FROM tasks
+            """,
+            (_iso(since), _iso(since), _iso(since)),
+        )
+        if row is None:
+            return DashboardStats(0, 0, 0, 0, 0, 0, 0, 0)
+        return DashboardStats(
+            total=int(row["total"] or 0),
+            active=int(row["active"] or 0),
+            queued=int(row["queued"] or 0),
+            succeeded=int(row["succeeded"] or 0),
+            failed=int(row["failed"] or 0),
+            created_since=int(row["created_since"] or 0),
+            succeeded_since=int(row["succeeded_since"] or 0),
+            failed_since=int(row["failed_since"] or 0),
+        )
+
+    def project_summaries(self, *, limit: int = 50) -> list[ProjectSummary]:
+        """按项目聚合；按最后活动时间倒序，避免 Dashboard 被冷项目淹没。"""
+        rows = self._fetch_all(
+            f"""
+            SELECT
+                project_id,
+                project_path,
+                COUNT(*) AS total,
+                SUM(CASE WHEN state IN {_ACTIVE_SQL} THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN state='succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) AS failed,
+                MAX(updated_at) AS last_activity
+            FROM tasks
+            GROUP BY project_id, project_path
+            ORDER BY last_activity DESC, project_path ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [
+            ProjectSummary(
+                project=ProjectRef(project_id=int(row["project_id"]), path=row["project_path"]),
+                total=int(row["total"] or 0),
+                active=int(row["active"] or 0),
+                succeeded=int(row["succeeded"] or 0),
+                failed=int(row["failed"] or 0),
+                last_activity=_dt(row["last_activity"]),
+            )
+            for row in rows
+        ]
 
     # ------------------------------------------------------------------ #
     # 队列与租约

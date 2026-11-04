@@ -138,5 +138,27 @@ def test_no_warnings_when_properly_configured() -> None:
         model_name="glm-5",
         model_base_url="http://llm.internal/v1",
         codex_expected_version="0.163.0",
+        dashboard_password="s3cr3t-pass",
     )
     assert settings.startup_warnings() == []
+
+
+def test_dashboard_warning_when_password_missing() -> None:
+    settings = Settings(
+        webhook_secret="x",
+        repo_whitelist=["a/b"],
+        bot_username="bot",
+        dashboard_enabled=True,
+        dashboard_password="",
+    )
+    assert any("DASHBOARD_PASSWORD" in item for item in settings.startup_warnings())
+
+
+def test_dashboard_disabled_has_no_password_warning() -> None:
+    settings = Settings(
+        webhook_secret="x",
+        repo_whitelist=["a/b"],
+        bot_username="bot",
+        dashboard_enabled=False,
+    )
+    assert not any("DASHBOARD_PASSWORD" in item for item in settings.startup_warnings())

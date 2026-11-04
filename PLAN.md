@@ -431,6 +431,7 @@ pipeline / job / trace，用只读 token 起 `gateway.mcp_readonly` 逐个调用
 | **M4 只读迷你 MCP** | 11 个只读工具（§3.3）、项目绑定、`read_api` token、输出截断 | ✅ 代码完成：374 项测试全绿。真子进程 + 真 stdio 协议 + 真 HTTP 验证了 11 个工具、`get_job_log` 取到失败日志、跨项目参数被拒、写 token 在场即拒绝启动（见 §8.4）；**"真 GitLab + 真 codex 下 agent 主动调用"待内网机器补做** |
 | **M5 运维加固** | pin 版本、镜像重写、删 glab、healthcheck、结构化日志、metrics、磁盘/保留策略（job 目录终态即清、codex 日志留 14 天、终态任务留 90 天）、`/tasks` 加鉴权 | ✅ 代码完成：417 项测试全绿。镜像/编排已重写并做静态校验；`/readyz`、`/metrics`、JSON 日志、Janitor 均有测试与真机烟测（§8.5）。**镜像首次 build 与 `/tasks` 的最终取舍待上线时确认** |
 | **M6 周期扫描与自动 Release（v0.2.0）** | `TriggerKind.SWEEP` / `TAG_PUSH`、补偿巡检（带配额）、`Closes/Fixes/Resolves #N` 回帖+`状态：已解决`+关闭、Tag Push → `TaskKind.RELEASE` → Conventional Commits 分组生成 release notes、Tag/Release SCM 端口、真 HTTP 桩与两条端到端假件 | ✅ 完成：全量 640 项测试全绿、ruff 干净；本地真 GitLab CE 19.5.3 验证 19/19 + 默认 autoclose/closed issue 9/9（open → 回帖+关闭；GitLab 先关闭 → 补回帖/标签；Tag Push → Release + previous tag compare） |
+| **M7 只读 Dashboard（v0.3.0）** | `GET /dashboard` HTTP Basic、健康/队列/24h 统计、最近任务、失败中心、项目聚合、任务详情、手动刷新；无操作能力 | ✅ 完成：655 项测试全绿、ruff 干净；Basic Auth/SQLite 汇总/HTML 转义/只读边界/DESIGN token 均有测试；随 v0.3.0 发布 |
 
 **已明确推迟**：Renovate（F-1，不进本仓库）；GitHub 平台适配；非 Python 项目；仓库级配置 `.mini-gitlab-bot.yaml`（§12）。`TODO.md` 里的两条需求已在 **v0.2.0（M6）** 落地，不再属于推迟项。
 
