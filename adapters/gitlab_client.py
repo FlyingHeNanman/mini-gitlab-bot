@@ -26,6 +26,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 import gitlab
 from gitlab.exceptions import (
@@ -83,6 +84,15 @@ def _commit_info(commit: Any) -> CommitInfo:
     )
 
 
+def _tag_web_url(name: str, commit: Any) -> str:
+    """GitLab 的 tag 列表不自带 `web_url`，从 commit 的 web_url 推出来。"""
+    commit_url = str(_field(commit, "web_url") or "")
+    base = commit_url.split("/-/commit/", 1)[0]
+    if not base or not name:
+        return ""
+    return f"{base}/-/tags/{quote(name, safe='')}"
+
+
 def _tag_info(tag: Any) -> TagInfo:
     commit = getattr(tag, "commit", None) or {}
     if isinstance(commit, dict):
@@ -91,10 +101,11 @@ def _tag_info(tag: Any) -> TagInfo:
     else:
         sha = str(getattr(commit, "id", "") or "")
         committed_at = _parse_dt(getattr(commit, "created_at", None))
+    name = str(getattr(tag, "name", "") or "")
     return TagInfo(
-        name=str(getattr(tag, "name", "") or ""),
+        name=name,
         commit_sha=sha,
-        web_url=str(getattr(tag, "web_url", "") or ""),
+        web_url=str(getattr(tag, "web_url", "") or "") or _tag_web_url(name, commit),
         committed_at=committed_at,
     )
 

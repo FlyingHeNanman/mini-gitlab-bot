@@ -367,6 +367,10 @@ async def test_list_tags_sorts_by_commit_time(stub: StubGitLab, scm: GitLabSCM) 
     stub.state.add_tag("v1.1.0", "bbb222", created_at="2026-10-20T00:00:00.000Z")
     tags = await scm.list_tags(ProjectRef(project_id=PROJECT_ID, path="group/project-a"))
     assert [item.name for item in tags] == ["v1.1.0", "v1.0.0"]
+    # 真 GitLab 的 tag 对象没有顶层 web_url；必须从 commit.web_url 推出 tag 链接，
+    # 否则 build_compare_url 拿不到 base，Release 正文会缺 compare 链接。
+    assert tags[0].web_url.endswith("/-/tags/v1.1.0")
+    assert tags[1].web_url.endswith("/-/tags/v1.0.0")
 
 
 async def test_compare_commits_returns_commits_between_refs(

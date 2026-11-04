@@ -181,6 +181,29 @@ async def test_sweep_resolves_issue_referenced_by_commit(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_sweep_resolution_creates_missing_status_label(tmp_path) -> None:
+    """新项目可能还没有任何机器人标签；周期扫描必须先建标签再 add_labels。"""
+    clock = Clock(NOW)
+    store = SqliteStore(tmp_path / "tasks.db")
+    issue = IssueSummary(iid=17, title="缺标签", description="复现步骤……")
+    commit = CommitInfo(
+        sha="feedface1234",
+        title="fix: 修复缺标签",
+        message="Fixes #17",
+        created_at=NOW - timedelta(hours=1),
+    )
+    # project_labels 默认为空：模拟"从未跑过 triage 的新项目"
+    scm = FakeSCM(open_issues=[issue], recent_commits=[commit])
+    sweeper = make_sweeper(store, scm, clock=clock)
+
+    report = await sweeper.run_once()
+    assert report.resolved == ((17, commit.sha),)
+    assert labels.STATUS_RESOLVED in scm.project_labels
+    assert any(item["name"] == labels.STATUS_RESOLVED for item in scm.created_labels)
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_sweep_resolution_ignores_skip_label_and_closed_issue(tmp_path) -> None:
     clock = Clock(NOW)
     store = SqliteStore(tmp_path / "tasks.db")

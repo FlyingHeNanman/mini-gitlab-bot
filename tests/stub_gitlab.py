@@ -202,8 +202,11 @@ class StubState:
     ) -> str:
         self.tags[name] = {
             "name": name,
-            "web_url": f"https://gitlab.example.com/{self.project.path}/-/tags/{name}",
-            "commit": {"id": sha, "created_at": created_at},
+            "commit": {
+                "id": sha,
+                "created_at": created_at,
+                "web_url": f"https://gitlab.example.com/{self.project.path}/-/commit/{sha}",
+            },
         }
         return name
 

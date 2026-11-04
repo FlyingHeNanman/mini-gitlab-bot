@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from core import labels
+from core.label_sync import LabelEnsurer
 from core.models import (
     CommitInfo,
     IssueSummary,
@@ -147,6 +148,9 @@ class Sweeper:
         self._settings = settings or SweepConfig()
         self._clock = clock
         self._metrics = metrics
+        # 周期扫描可能先于任何 triage 任务运行；`状态：已解决` 标签必须自己确保存在，
+        # 否则 GitLab 的 add_labels 会因标签不存在而直接 400。
+        self._labels = LabelEnsurer(scm)
 
     async def run_once(self) -> SweepReport:
         now = self._clock()
@@ -165,6 +169,13 @@ class Sweeper:
             if project is None:
                 errors.append(f"{path}: 项目不存在或无权访问")
                 continue
+
+            if self._settings.resolve_enabled:
+                try:
+                    await self._labels.ensure(project.project_id)
+                except Exception as exc:  # noqa: BLE001 标签失败不阻止后续尝试
+                    errors.append(f"{path}: ensure_labels: {type(exc).__name__}: {exc}")
+                    logger.warning("周期扫描创建 %s 的标签失败：%s", path, exc)
 
             issues: tuple[IssueSummary, ...] = ()
             try:

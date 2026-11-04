@@ -216,7 +216,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 634 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 635 项，无需 GitLab / 无需 LLM
 ```
 
 测试分层：
@@ -259,13 +259,13 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 634 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 635 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
 | 自动修（真件） | ✅ 巡检判定 eligible → 内部派生 fix → 真 codex 修复 → draft MR（父任务链、draft、Closes 均验证） |
 | 重复/指派 | ✅ 高置信重复关联并关闭；CODEOWNERS 命中即指派；GitLab assign/link/close API 已真机验证 |
 | 合并解释（真件） | ✅ 真 GitLab MR merge → 不 clone、只看 diff → 真 codex 解释评论 + 状态：已合并 |
-| 周期扫描 / 自动关闭 | ✅ 单元 + 端到端假件 + 真 HTTP 桩验证；`状态：已解决` 与评论幂等已覆盖，**真 GitLab 待验证** |
-| 自动 Release | ✅ Tag Push 解析、提交分组、已有 Release 跳过、端到端假件 + 真 HTTP 桩验证；**真 GitLab Release API 待验证** |
+| 周期扫描 / 自动关闭 | ✅ 真 GitLab CE 19.5.3（关闭 autoclose 后）：commit 引用 → 回帖/`状态：已解决`/关闭，评论幂等；**默认 autoclose 下 GitLab 会先关闭，机器人扫不到** |
+| 自动 Release | ✅ 真 GitLab CE 19.5.3：Tag Push → Release、previous tag compare、修复/新功能分组；已有 Release 跳过由假件覆盖 |
 | 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
 | 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |
 | 只读 MCP | ✅ 11 个工具在真实 GitLab 数据上逐个验证（含真实 CI 日志） |
@@ -273,6 +273,7 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 | 非 Python 项目 | ❌ 未支持（首期只做 uv 管理的 Python 项目） |
 | 非 GitLab 平台 | ❌ 未支持（GitHub/Gitea 只是端口层面的可能性） |
 | 其他 GitLab 版本 | ⚠️ 只验证过 19.5；16/17/18 未逐一测试 |
+| GitLab 默认自动关闭 | ⚠️ `autoclose_referenced_issues=true`（默认）时，`Closes #N` 提交推默认分支后 GitLab 先关闭 issue，周期扫描看不到；要机器人回帖需在项目设置关闭该选项，或后续扩展扫描近期 closed issue |
 
 ## 文档
 
@@ -280,6 +281,7 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 - [docs/design/auto-triage.md](docs/design/auto-triage.md) —— 触发/巡检/标签/周期扫描与自动 Release 的设计
 - [CHANGELOG.md](CHANGELOG.md) —— 版本变更
 - [docs/RELEASING.md](docs/RELEASING.md) —— 分支模型与发版流程
+- [docs/verification/v0.2-real-gitlab.md](docs/verification/v0.2-real-gitlab.md) —— v0.2 周期扫描与自动 Release 的真 GitLab 验证记录
 - [docs/templates.md](docs/templates.md) —— MR 描述 / 状态评论 / report.json 的模板
 - [docs/research/](docs/research/README.md) —— 事实核查依据（Codex、GitLab、MCP 的行为）
 
