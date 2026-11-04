@@ -123,8 +123,8 @@ docker compose up -d
 # 固定版本：MGB_VERSION=0.4.0 docker compose up -d
 ```
 
-> 初始化页/登录页属于当前源码的 Unreleased 功能，对应 GHCR 镜像会在 v0.4.0 发布；
-> 发布前请用源码构建：`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`。
+> `v0.4.0` 起的镜像包含初始化页和登录页；从源码构建用
+> `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`。
 
 容器挂两个卷：`/data`（配置 + SQLite + 日志）、`/work`（job 目录 + uv 缓存）。
 

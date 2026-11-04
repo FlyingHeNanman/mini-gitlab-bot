@@ -10,7 +10,7 @@
 
 验收：`uv run pytest -q`（677 项）、`uv run ruff check .`、`uv run ruff format --check .`。
 
-## 进行中：只读 Dashboard
+## 已落地：只读 Dashboard（v0.4.0）
 
 只读观测台已实现（`/login` session + `/dashboard`），初始化与配置页见 `docs/design/dashboard.md`。
 第二期再做重试/取消/手动触发与审计；当前明确不做多实例聚合。
