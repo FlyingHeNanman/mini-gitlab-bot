@@ -13,7 +13,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
-from core.models import EnqueueOutcome, ReapOutcome, Task, TaskEvent, Trigger
+from core.models import (
+    DashboardStats,
+    EnqueueOutcome,
+    ProjectSummary,
+    ReapOutcome,
+    Task,
+    TaskEvent,
+    Trigger,
+)
 from core.states import TaskState
 
 
@@ -29,6 +37,14 @@ class Store(Protocol):
     def list_tasks(self, *, state: TaskState | None = None, limit: int = 50) -> list[Task]: ...
 
     def count(self, *, state: TaskState | None = None) -> int: ...
+
+    def dashboard_stats(self, *, since: datetime) -> DashboardStats:
+        """Dashboard 总览：全量状态分布 + `since` 之后的新增/成功/失败。"""
+        ...
+
+    def project_summaries(self, *, limit: int = 50) -> list[ProjectSummary]:
+        """按项目聚合的只读统计（按最后活动时间倒序）。"""
+        ...
 
     # ---- 队列与租约 ----
 

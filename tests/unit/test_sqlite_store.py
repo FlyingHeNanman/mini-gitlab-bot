@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from adapters.sqlite_store import SqliteStore
@@ -302,3 +304,81 @@ def test_diff_summary_model_is_used_by_store_contract(store: SqliteStore) -> Non
     assert not diff.is_empty
     assert diff.changed_lines == 5
     assert DiffSummary().is_empty
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard 汇总
+# --------------------------------------------------------------------------- #
+
+
+def _to_succeeded(store: SqliteStore, task_id: str, clock: Clock) -> None:
+    for state in (
+        TaskState.PREPARING,
+        TaskState.RUNNING,
+        TaskState.VALIDATING,
+        TaskState.PUSHING,
+        TaskState.OPENING_MR,
+        TaskState.SUCCEEDED,
+    ):
+        store.transition(task_id, state, now=clock())
+
+
+def test_dashboard_stats_split_all_time_and_24h(store: SqliteStore, clock: Clock) -> None:
+    old = store.enqueue(
+        make_trigger(delivery_key="old", issue_iid=1, project_id=7, path="group/old"),
+        now=clock() - timedelta(days=2),
+    )
+    assert old.task is not None
+    done = store.enqueue(
+        make_trigger(delivery_key="done", issue_iid=2, project_id=42, path="group/new"),
+        now=clock(),
+    )
+    assert done.task is not None
+    _to_succeeded(store, done.task.id, clock)
+
+    failed = store.enqueue(
+        make_trigger(delivery_key="failed", issue_iid=3, project_id=42, path="group/new"),
+        now=clock(),
+    )
+    assert failed.task is not None
+    store.fail(failed.task.id, stage="running", reason="boom", now=clock())
+
+    stats = store.dashboard_stats(since=clock() - timedelta(hours=24))
+    assert stats.total == 3
+    assert stats.active == 1  # 两天前的任务仍是 queued
+    assert stats.queued == 1
+    assert stats.succeeded == 1
+    assert stats.failed == 1
+    assert stats.created_since == 2  # 旧任务不计入 24h 窗口
+    assert stats.succeeded_since == 1
+    assert stats.failed_since == 1
+
+
+def test_project_summaries_group_and_order_by_last_activity(
+    store: SqliteStore, clock: Clock
+) -> None:
+    old = store.enqueue(
+        make_trigger(delivery_key="old", issue_iid=1, project_id=7, path="group/old"),
+        now=clock() - timedelta(days=2),
+    )
+    assert old.task is not None
+    done = store.enqueue(
+        make_trigger(delivery_key="done", issue_iid=2, project_id=42, path="group/new"),
+        now=clock(),
+    )
+    assert done.task is not None
+    _to_succeeded(store, done.task.id, clock)
+    failed = store.enqueue(
+        make_trigger(delivery_key="failed", issue_iid=3, project_id=42, path="group/new"),
+        now=clock(),
+    )
+    assert failed.task is not None
+    store.fail(failed.task.id, stage="running", reason="boom", now=clock())
+
+    projects = store.project_summaries()
+    assert [item.project.path for item in projects] == ["group/new", "group/old"]
+    new, old_project = projects
+    assert new.total == 2 and new.active == 0
+    assert new.succeeded == 1 and new.failed == 1
+    assert old_project.total == 1 and old_project.active == 1
+    assert old_project.last_activity is not None

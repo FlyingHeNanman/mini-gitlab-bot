@@ -6,12 +6,15 @@ webhook、40 次永久禁用，所以任何异常都只落日志、响应仍是 
 唯一有意返回非 2xx 的情况是 `X-Gitlab-Token` 不匹配（401）—— 那是**运维信号**，
 正常运行时不会出现；比"静默 200 装作收到了"更容易排查。
 
-`/tasks` 状态页在 v1 **故意不暴露**（PLAN §12 #7）：只留无信息的 `/healthz`。
+`/healthz` 仍然不返回任务信息；需要排障时走两个独立的只读页面：
+`/tasks`（token）与 `/dashboard`（HTTP Basic，默认关闭）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -26,6 +29,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from core import __version__
+from core.dashboard_view import DashboardData, render_dashboard, render_dashboard_task
 from core.logging_setup import attach_uvicorn_loggers, configure_logging
 from core.models import TriggerKind
 from core.states import ACTIVE_STATES, TaskKind, TaskState
@@ -65,6 +69,10 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             logger.info("只读任务页已启用：GET /tasks（首次带 ?token=… 或 X-Admin-Token 头）")
         else:
             logger.info("只读任务页已关闭（TASKS_PAGE_ENABLED=false 或无法持久化 token）")
+        if settings.dashboard_active:
+            logger.info("Dashboard 已启用：GET /dashboard（HTTP Basic）")
+        else:
+            logger.info("Dashboard 已关闭（DASHBOARD_ENABLED=false 或 DASHBOARD_PASSWORD 为空）")
         worker_job: asyncio.Task[None] | None = None
         if rt.worker is not None:
             worker_job = asyncio.create_task(rt.worker.run_forever(), name="mini-gitlab-bot-worker")
@@ -90,7 +98,7 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
     async def healthz() -> dict[str, str]:
         """存活探针：进程还在、事件循环还能响应就 200。
 
-        刻意**不含任何任务信息**（v1 不暴露 `/tasks`，避免泄露仓库名 / issue 标题 / 堆栈）。
+        刻意**不含任何任务信息**（避免在无鉴权端点上泄露仓库名 / issue 标题 / 堆栈）。
         """
         return {"status": "ok"}
 
@@ -194,6 +202,101 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             path="/",  # `/tasks.json` 不在 `/tasks` 前缀下，所以用根路径
         )
         return response
+
+    def _dashboard_denied(request: Request) -> PlainTextResponse | None:
+        """HTTP Basic 鉴权；未配置密码时整个 Dashboard 404（不开放默认入口）。"""
+        if not settings.dashboard_active:
+            return PlainTextResponse("Not Found", status_code=404)
+        header = request.headers.get("authorization", "")
+        scheme, _, encoded = header.partition(" ")
+        if scheme.lower() != "basic" or not encoded.strip():
+            return _dashboard_unauthorized()
+        try:
+            decoded = base64.b64decode(encoded.strip(), validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            return _dashboard_unauthorized()
+        user, separator, password = decoded.partition(":")
+        if not separator:
+            return _dashboard_unauthorized()
+        user_ok = hmac.compare_digest(user.encode("utf-8"), settings.dashboard_username.encode())
+        pass_ok = hmac.compare_digest(
+            password.encode("utf-8"), settings.dashboard_password.encode()
+        )
+        if not (user_ok and pass_ok):
+            return _dashboard_unauthorized()
+        return None
+
+    @app.get("/dashboard")
+    async def dashboard_page(request: Request) -> Any:
+        denied = _dashboard_denied(request)
+        if denied is not None:
+            return denied
+        now = rt.clock()
+        try:
+            stats = rt.store.dashboard_stats(since=now - timedelta(hours=24))
+            projects = rt.store.project_summaries(limit=50)
+            recent = rt.store.list_tasks(limit=20)
+            failures = rt.store.list_tasks(state=TaskState.FAILED, limit=8)
+            stalled = await _has_stalled_task(rt, settings.ready_stale_sec)
+        except Exception:  # noqa: BLE001 观测页失败不能把堆栈/路径带出去
+            logger.exception("Dashboard 数据读取失败")
+            return PlainTextResponse("dashboard unavailable", status_code=503)
+        metric_values = {
+            name: rt.metrics.value(name)
+            for name in (
+                "sweep_runs_total",
+                "sweep_triaged_total",
+                "sweep_resolved_total",
+                "sweep_errors_total",
+                "release_total",
+                "release_skipped_total",
+                "release_failures_total",
+            )
+        }
+        return HTMLResponse(
+            render_dashboard(
+                DashboardData(
+                    now=now,
+                    version=__version__,
+                    worker_enabled=rt.worker is not None,
+                    stalled=stalled,
+                    stats=stats,
+                    projects=tuple(projects),
+                    recent=tuple(recent),
+                    failures=tuple(failures),
+                    metrics=metric_values,
+                    gitlab_url=settings.gitlab_url,
+                )
+            ),
+            headers=_DASHBOARD_HEADERS,
+        )
+
+    @app.get("/dashboard/task/{task_id}")
+    async def dashboard_task(request: Request, task_id: str) -> Any:
+        denied = _dashboard_denied(request)
+        if denied is not None:
+            return denied
+        task = rt.store.get(task_id)
+        if task is None:
+            return PlainTextResponse("Not Found", status_code=404)
+        log_path = task.log_path or str(settings.log_dir / task.id / "codex.jsonl")
+        log_tail, log_lines = _read_log_tail(log_path)
+        try:
+            events = rt.store.events(task.id)
+        except Exception:  # noqa: BLE001 事件表异常不影响基本信息
+            logger.exception("Dashboard 读取任务事件失败：task=%s", task.id)
+            events = []
+        return HTMLResponse(
+            render_dashboard_task(
+                task,
+                events=events,
+                log_tail=log_tail,
+                log_lines=log_lines,
+                now=rt.clock(),
+                gitlab_url=settings.gitlab_url,
+            ),
+            headers=_DASHBOARD_HEADERS,
+        )
 
     def _list_for(state: str, limit: int):
         wanted = TaskState(state) if state else None
@@ -352,6 +455,21 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             return JSONResponse({"status": "error"})
 
     return app
+
+
+#: 观测页含仓库名/失败原因，禁止共享缓存；Basic 凭据由浏览器自行处理。
+_DASHBOARD_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def _dashboard_unauthorized() -> PlainTextResponse:
+    return PlainTextResponse(
+        "unauthorized",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="mini-gitlab-bot", charset="UTF-8"'},
+    )
 
 
 def _read_log_tail(log_path: str | None, *, limit: int = 40) -> tuple[str, int]:
