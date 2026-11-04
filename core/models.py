@@ -124,6 +124,32 @@ class Task:
         return max(0.0, (end - self.created_at).total_seconds())
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardStats:
+    """Dashboard 总览计数（`since` 是 24h 窗口的起点）。"""
+
+    total: int
+    active: int
+    queued: int
+    succeeded: int
+    failed: int
+    created_since: int
+    succeeded_since: int
+    failed_since: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSummary:
+    """按项目聚合的只读统计，供 Dashboard 项目表使用。"""
+
+    project: ProjectRef
+    total: int
+    active: int
+    succeeded: int
+    failed: int
+    last_activity: datetime | None
+
+
 #: 允许通过 `Store.transition(**fields)` 写入的字段白名单。
 UPDATABLE_FIELDS: frozenset[str] = frozenset(
     {

@@ -35,7 +35,7 @@
 > **新 issue 自动巡检 → 打类型/严重度/组件标签 → 人工打 `机器人：修复` → 拉代码 → 装依赖 → AI 改代码 → 跑测试 → 推分支 → 开 draft MR → 回帖告诉你结果**
 
 合并永远由人决定。机器人的产出是 issue 上的**巡检结论 + 状态评论**，以及（人工确认后）一个 **draft MR**；
-  另有两条兜底链路：**周期扫描**补做漏投的巡检、识别 `Closes/Fixes/Resolves #N` 自动回帖（open 时关闭；GitLab 已 autoclose 则补标记），**Tag Push** 后按提交分类补 GitLab Release 说明。
+  另有两条兜底链路：**周期扫描**补做漏投的巡检、识别 `Closes/Fixes/Resolves #N` 自动回帖（open 时关闭；GitLab 已 autoclose 则补标记），**Tag Push** 后按提交分类补 GitLab Release 说明；以及一个只读 **Dashboard** 看队列、失败与项目状态。
 
 ## 一次完整的闭环
 
@@ -154,9 +154,14 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 | `GET /metrics` | Prometheus 文本：`tasks_total{state}`、`task_duration_seconds`、`queue_depth`、`worker_inflight`、`sweep_*`、`release_*`… |
 | `GET /tasks` | **只读任务页**（token 保护）：状态、失败阶段、原因、耗时、MR 链接，点进去看日志尾部 |
 | `GET /tasks.json` | 同上，给脚本用 |
+| `GET /dashboard` | **只读观测台**（HTTP Basic）：健康、队列、24h 统计、失败中心、项目、最近任务 |
 
 `/tasks` 默认开启但**必须带 token**：没配 `ADMIN_TOKEN` 时首次启动自动生成，持久化到
 `<DB_PATH 同目录>/admin_token`（0600），`cat /data/admin_token` 取即可。
+
+`/dashboard` 默认关闭（fail closed）：设置 `DASHBOARD_PASSWORD` 后才启用，用
+`DASHBOARD_USERNAME`（默认 `admin`）+ 该密码走浏览器 HTTP Basic 登录。只读，手动刷新；
+当前实例只看自己的 SQLite。设计见 [docs/design/dashboard.md](docs/design/dashboard.md)。
 日志是结构化 JSON，每行自带 `task_id`；保留策略：日志 14 天、终态任务 90 天。
 
 ## 安全模型
@@ -207,6 +212,8 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 | `FORBIDDEN_PATHS` | 禁改路径 | CI 配置、密钥… |
 | `LOG_DIR` / `LOG_RETENTION_DAYS` | 日志目录 / 保留天数 | `/data/logs` / `14` |
 | `ADMIN_TOKEN` | `/tasks` 的 token；空 = 自动生成 | 空 |
+| `DASHBOARD_ENABLED` | Dashboard 总开关 | `true` |
+| `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` | Dashboard 的 HTTP Basic 凭据；密码空 = 关闭 | `admin` / 空 |
 
 </details>
 
@@ -216,7 +223,7 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 640 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 654 项，无需 GitLab / 无需 LLM
 ```
 
 测试分层：
@@ -259,13 +266,14 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 640 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 654 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
 | 自动修（真件） | ✅ 巡检判定 eligible → 内部派生 fix → 真 codex 修复 → draft MR（父任务链、draft、Closes 均验证） |
 | 重复/指派 | ✅ 高置信重复关联并关闭；CODEOWNERS 命中即指派；GitLab assign/link/close API 已真机验证 |
 | 合并解释（真件） | ✅ 真 GitLab MR merge → 不 clone、只看 diff → 真 codex 解释评论 + 状态：已合并 |
 | 周期扫描 / 自动关闭 | ✅ 真 GitLab CE 19.5.3：open issue → 回帖/`状态：已解决`/关闭；GitLab autoclose 先关闭时，近期 closed issue 也会补回帖/标签，marker 幂等 |
 | 自动 Release | ✅ 真 GitLab CE 19.5.3：Tag Push → Release、previous tag compare、修复/新功能分组；已有 Release 跳过由假件覆盖 |
+| Dashboard | ✅ 只读观测台：HTTP Basic、总览/失败中心/项目聚合/最近任务/任务详情，654 项测试覆盖；当前仅单实例 SQLite |
 | 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
 | 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |
 | 只读 MCP | ✅ 11 个工具在真实 GitLab 数据上逐个验证（含真实 CI 日志） |

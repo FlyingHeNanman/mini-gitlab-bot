@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     #: 显式设置则以此为准
     admin_token: str = ""
 
+    # ---------- Dashboard（只读观测台） ----------
+    #: 总开关；关掉后 /dashboard* 一律 404
+    dashboard_enabled: bool = True
+    #: HTTP Basic 用户名；只在密码非空时生效
+    dashboard_username: str = "admin"
+    #: HTTP Basic 密码；留空 = Dashboard 关闭（fail closed，绝不裸奔）
+    dashboard_password: str = ""
+
     # ---------- 可观测性与保留策略（M5） ----------
     log_level: str = "INFO"
     #: json | text（容器里用 json，本地开发用 text 更顺眼）
@@ -181,6 +189,11 @@ class Settings(BaseSettings):
     def effective_uv_cache_dir(self) -> Path:
         return self.uv_cache_dir or (self.work_dir / ".uv-cache")
 
+    @property
+    def dashboard_active(self) -> bool:
+        """密码为空时 Dashboard 关闭：鉴权配置不能有“默认放行”的退路。"""
+        return self.dashboard_enabled and bool(self.dashboard_password)
+
     def startup_warnings(self) -> list[str]:
         """配置体检：宁可启动时吵，也不要静默拒绝一切或静默放行。"""
         warnings: list[str] = []
@@ -199,6 +212,10 @@ class Settings(BaseSettings):
             warnings.append("WORKER_ENABLED=true 但没有活跃 webhook：任务只能来自手工入队")
         if self.admin_token and len(self.admin_token) < 16:
             warnings.append("ADMIN_TOKEN 太短（<16 字符）：请换成随机长串")
+        if self.dashboard_enabled and not self.dashboard_password:
+            warnings.append("DASHBOARD_PASSWORD 未设置：/dashboard 已关闭（fail closed）")
+        if self.dashboard_active and len(self.dashboard_password) < 8:
+            warnings.append("DASHBOARD_PASSWORD 太短（<8 字符）：请换成足够随机的密码")
         if not self.gitlab_token:
             warnings.append("GITLAB_TOKEN 未设置：SCM 退回占位实现，权限闸门会拒绝所有触发")
         if not self.model_base_url:

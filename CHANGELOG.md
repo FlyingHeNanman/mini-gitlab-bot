@@ -2,6 +2,12 @@
 
 本项目的所有重要变更都记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **只读 Dashboard**（`GET /dashboard`）：HTTP Basic 鉴权；总览健康/队列/24h 统计、最近任务、失败中心、项目聚合与 sweep/release 进程指标；手动刷新，不提供重试/取消/手动触发。当前实例只看自己的 SQLite。
+
 ## [0.2.1] - 2026-11-04
 
 ### 修复
