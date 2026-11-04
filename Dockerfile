@@ -34,6 +34,7 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     LOG_DIR=/data/logs \
+    CONFIG_FILE=/data/config.json \
     UV_CACHE_DIR=/work/.uv-cache
 
 # git 是准备阶段 clone/commit/push 的刚需；ca-certificates 用于内网 TLS 端点

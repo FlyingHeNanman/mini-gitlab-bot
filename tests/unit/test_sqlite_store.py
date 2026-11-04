@@ -382,3 +382,19 @@ def test_project_summaries_group_and_order_by_last_activity(
     assert new.succeeded == 1 and new.failed == 1
     assert old_project.total == 1 and old_project.active == 1
     assert old_project.last_activity is not None
+
+
+def test_daily_counts_group_by_utc_day(store: SqliteStore, clock: Clock) -> None:
+    old = store.enqueue(
+        make_trigger(delivery_key="old", issue_iid=1),
+        now=clock() - timedelta(days=6),
+    )
+    assert old.task is not None
+    today = store.enqueue(make_trigger(delivery_key="today", issue_iid=2), now=clock())
+    assert today.task is not None
+    store.fail(today.task.id, stage="running", reason="boom", now=clock())
+    points = store.daily_counts(since=clock() - timedelta(days=7))
+    by_day = {point.day: point for point in points}
+    assert by_day[clock().date().isoformat()].total == 1
+    assert by_day[clock().date().isoformat()].failed == 1
+    assert by_day[(clock() - timedelta(days=6)).date().isoformat()].total == 1

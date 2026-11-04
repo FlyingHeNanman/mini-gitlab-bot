@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -328,6 +329,10 @@ def build_production_runtime(
         metrics=metrics,
     )
     workspace = LocalWorkspace(settings.work_dir)
+    agent_env = dict(os.environ)
+    if settings.llm_api_key:
+        # 只进 codex 子进程的凭据映射；不写 os.environ、不进 argv / 日志。
+        agent_env[settings.api_key_env] = settings.llm_api_key
     return build_runtime(
         settings,
         store=store,
@@ -363,6 +368,7 @@ def build_production_runtime(
                 mcp_max_output_chars=settings.mcp_max_output_chars,
             ),
             log_dir=settings.log_dir,
+            environ=agent_env,
         ),
         workspace=workspace,
         env=UvEnvPreparer(

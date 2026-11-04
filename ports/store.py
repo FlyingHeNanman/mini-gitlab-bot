@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from core.models import (
+    DailyCount,
     DashboardStats,
     EnqueueOutcome,
     ProjectSummary,
@@ -44,6 +45,10 @@ class Store(Protocol):
 
     def project_summaries(self, *, limit: int = 50) -> list[ProjectSummary]:
         """按项目聚合的只读统计（按最后活动时间倒序）。"""
+        ...
+
+    def daily_counts(self, *, since: datetime) -> list[DailyCount]:
+        """按 UTC 日期聚合任务量，供 Dashboard 趋势卡使用。"""
         ...
 
     # ---- 队列与租约 ----

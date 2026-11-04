@@ -115,11 +115,14 @@ def test_dashboard_task_detail_renders_events_and_issue_link() -> None:
     assert "返回 Dashboard" in body
 
 
-def test_dashboard_uses_design_md_tokens_and_single_accent() -> None:
+def test_dashboard_uses_dusty_canvas_tokens() -> None:
     body = render_dashboard(make_data())
-    assert "--color-primary: #0066cc" in body
-    assert "SF Pro Display" in body and "SF Pro Text" in body
-    assert "font-size: 56px" in body
+    assert "--canvas: #B0B7CE" in body
+    assert "--shell: #F0F1F4" in body
+    assert "--brand: #E24D33" in body
+    assert "Source Serif 4" in body and "Inter" in body
+    assert "border-radius: var(--rounded-card)" in body
+    assert "box-shadow: var(--shadow-card)" in body
     assert "linear-gradient" not in body
-    assert "box-shadow" not in body
-    assert "text-shadow" not in body
+    assert "#0066cc" not in body
+    assert "#000000" not in body

@@ -2,6 +2,20 @@
 
 本项目的所有重要变更都记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **免 clone 部署**：`docker run` / `docker compose up -d` 直接拉镜像启动，不再要求先复制 `.env`；首次打开 `/setup` 初始化，配置写入 `/data/config.json`（0600）。
+- **初始化向导**：基础变量（GitLab、Webhook、项目白名单、模型、管理员）与高级变量（并发、配额、Sweep、Release、diff、保留策略）分层；保存后重启生效。
+- **配置页**：登录后 `/settings` 可修改基础/高级变量；secret 不回显，留空保持；保存做 Origin 校验、原子写入。
+- **登录页 + session**：`/login` 替代浏览器 HTTP Basic 弹框；HMAC 签名 HttpOnly cookie（SameSite=Strict，12h），改密码旧 session 失效。
+- **Dashboard 重做**：按新版 `DESIGN.md` 的「云图柔板 / Dusty Canvas」重写总览、失败中心、项目列表、7 日趋势、任务详情、登录与配置页。
+
+### 测试
+
+- 全量 **672 项**测试通过，`ruff check` / `ruff format --check` 干净。
+
 ## [0.3.0] - 2026-11-04
 
 ### 新增

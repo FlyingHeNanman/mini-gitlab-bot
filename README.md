@@ -99,34 +99,58 @@ flowchart LR
 
 ## 快速开始
 
-### 1. 起服务
+### 1. 起服务（不需要 clone、不需要 .env）
 
 ```bash
-git clone https://github.com/FlyingHeNanman/mini-gitlab-bot.git
-cd mini-gitlab-bot
-
-docker pull ghcr.io/flyinghenanman/mini-gitlab-bot:0.2.0   # 或本地 docker compose build
-
-cp .env.example .env
-# 至少填：WEBHOOK_SECRET / GITLAB_TOKEN / GITLAB_READONLY_TOKEN / REPO_WHITELIST / MODEL_BASE_URL
-docker compose up -d
+docker run -d --name mini-gitlab-bot \
+  --restart unless-stopped --init \
+  -p 8080:8080 \
+  -v mini-gitlab-bot-data:/data \
+  -v mini-gitlab-bot-work:/work \
+  --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+  --cap-drop ALL \
+  ghcr.io/flyinghenanman/mini-gitlab-bot:latest
 ```
 
-`docker compose` 会挂两个卷：`/data`（SQLite + 日志）、`/work`（job 目录 + uv 缓存）。
+打开 `http://<host>:8080/setup`，按页面填 GitLab、模型与管理员账号，保存后重启容器，
+再打开 `/login` 登录。配置写入 `/data/config.json`（0600），不需要先复制 `.env`。
+
+或者用 compose（同样不用 clone，下载一个文件即可）：
+
+```bash
+curl -O https://raw.githubusercontent.com/FlyingHeNanman/mini-gitlab-bot/main/docker-compose.yml
+docker compose up -d
+# 固定版本：MGB_VERSION=0.4.0 docker compose up -d
+```
+
+> 初始化页/登录页属于当前源码的 Unreleased 功能，对应 GHCR 镜像会在 v0.4.0 发布；
+> 发布前请用源码构建：`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`。
+
+容器挂两个卷：`/data`（配置 + SQLite + 日志）、`/work`（job 目录 + uv 缓存）。
 
 > **给容器 `seccomp=unconfined`**（compose 里已配好）：Codex 的 Linux 沙箱用 bubblewrap 创建
 > 非特权 user namespace，Docker 默认 seccomp 会拒绝，表现为 agent 一条命令都执行不了。
 
-### 2. GitLab 侧准备
+### 2. 初始化
+
+1. 打开 `/setup`，填基础变量：GitLab 地址、写 token、只读 token（可选）、Webhook Secret、机器人用户名、项目白名单、模型端点/模型名/API Key、Dashboard 管理员与密码；
+2. 高级变量（并发、配额、Sweep、Release、保留策略、diff 上限）在折叠区，有默认值；
+3. 保存后点“重启服务”（或执行 `docker restart mini-gitlab-bot`），配置才进入运行时；
+4. 打开 `/login` 登录 Dashboard；之后随时可在 `/settings` 修改基础/高级配置。
+
+初始化完成后 `/setup` 自动关闭；Dashboard 密码为空时整个观测台 fail closed。
+`/setup` 在初始化前是开放的，首次启动请只把端口暴露在可信网络（初始化完成后它会自动关闭）。
+
+### 3. GitLab 侧准备
 
 | 步骤 | 说明 |
 | --- | --- |
 | 机器人账号 | 建一个专用账号（如 `gitlab-bot`），角色 **Developer**，不要给 Maintainer/Owner |
 | 两个 Token | 主 token：`api`；只读 token：`read_api`（给 MCP 用，物理上不能写） |
 | 标签 | 不需要手工建：机器人第一次干活时自动创建 32 个中文标签（类型/严重度/组件/状态/证据/风险/命令），其中 `状态：已解决` 用于 commit 引用自动关闭 |
-| Webhook | Settings → Webhooks → `http://<bot 容器>:8080/webhook/gitlab`，Secret 与 `WEBHOOK_SECRET` 一致，勾 **Issues events**、**Comments**、**Merge request events**、**Tag push events** |
+| Webhook | Settings → Webhooks → `http://<bot 容器>:8080/webhook/gitlab`，Secret 填初始化页生成的那一串，勾 **Issues events**、**Comments**、**Merge request events**、**Tag push events** |
 
-### 3. 触发
+### 4. 触发
 
 - **自动巡检**：新开 / 重开 issue 即触发（`TRIAGE_ENABLED=true`，默认开）；
 - **修复**：在 issue 上打 `机器人：修复` 标签，或评论 `/fix`；
@@ -154,14 +178,16 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 | `GET /metrics` | Prometheus 文本：`tasks_total{state}`、`task_duration_seconds`、`queue_depth`、`worker_inflight`、`sweep_*`、`release_*`… |
 | `GET /tasks` | **只读任务页**（token 保护）：状态、失败阶段、原因、耗时、MR 链接，点进去看日志尾部 |
 | `GET /tasks.json` | 同上，给脚本用 |
-| `GET /dashboard` | **只读观测台**（HTTP Basic）：健康、队列、24h 统计、失败中心、项目、最近任务 |
+| `GET /dashboard` | **只读观测台**（登录页 + session）：健康、7 日趋势、失败中心、项目、最近任务 |
 
 `/tasks` 默认开启但**必须带 token**：没配 `ADMIN_TOKEN` 时首次启动自动生成，持久化到
 `<DB_PATH 同目录>/admin_token`（0600），`cat /data/admin_token` 取即可。
 
-`/dashboard` 默认关闭（fail closed）：设置 `DASHBOARD_PASSWORD` 后才启用，用
-`DASHBOARD_USERNAME`（默认 `admin`）+ 该密码走浏览器 HTTP Basic 登录。只读，手动刷新；
-当前实例只看自己的 SQLite。设计见 [docs/design/dashboard.md](docs/design/dashboard.md)。
+`/dashboard` 默认关闭（fail closed）：初始化时设置 `DASHBOARD_PASSWORD` 后才启用，走
+`/login` 的签名 HttpOnly session（12 小时过期），不再弹浏览器 Basic 框。只读，手动刷新；
+当前实例只看自己的 SQLite。初始化写 `/data/config.json`（0600），`/setup` 在未初始化时开放，
+`/settings` 登录后可改基础/高级变量，保存后重启生效。设计见
+[docs/design/dashboard.md](docs/design/dashboard.md)。
 日志是结构化 JSON，每行自带 `task_id`；保留策略：日志 14 天、终态任务 90 天。
 
 ## 安全模型
@@ -186,34 +212,43 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 
 ## 配置
 
+配置页把变量分成两层，第一次部署只要求基础变量；其余都有默认值，可在高级区改。
+
 <details>
-<summary><b>常用环境变量（完整列表见 <code>.env.example</code>）</b></summary>
+<summary><b>基础变量（/setup 必填或建议填）</b></summary>
 
 | 变量 | 说明 | 默认 |
 | --- | --- | --- |
-| `WEBHOOK_SECRET` | Webhook secret；未配置则一律 401 | — |
-| `REPO_WHITELIST` | 允许处理的项目，逗号分隔；空 = 全部拒绝 | 空 |
 | `GITLAB_URL` / `GITLAB_TOKEN` | 实例地址 / 主 token（`api`） | — |
-| `GITLAB_READONLY_TOKEN` | 只读 token（`read_api`），给 MCP | — |
+| `GITLAB_READONLY_TOKEN` | 只读 token（`read_api`），给 MCP；可留空 | — |
+| `WEBHOOK_SECRET` | Webhook secret；初始化页自动生成 | — |
+| `REPO_WHITELIST` | 允许处理的项目，逗号分隔；空 = 全部拒绝 | 空 |
 | `BOT_USERNAME` | 机器人账号，用于忽略自己产生的事件 | — |
-| `MIN_ACCESS_LEVEL` | 触发者角色下限（Developer = 30） | `30` |
-| `TRIAGE_ENABLED` | 新 issue 自动巡检（排查/打中文标签/回帖） | `true` |
-| `SWEEP_ENABLED` / `SWEEP_INTERVAL_SEC` | 周期扫描总开关 / 间隔秒数 | `true` / `1800` |
-| `SWEEP_RESOLVE_ENABLED` | 用 commit 引用自动回帖；open issue 同时关闭，已 closed 则补标签/评论 | `true` |
-| `RELEASE_ENABLED` | Tag Push 自动补 GitLab Release | `true` |
-| `RELEASE_LOOKBACK_DAYS` | 首个 tag 回退多少天提交来生成说明 | `365` |
-| `ALLOWED_TRIGGER_USERS` | 可选额外白名单（与角色下限是 AND） | 空 |
 | `MODEL_BASE_URL` / `MODEL_NAME` | 内网模型端点（需支持 Responses API）/ 模型名 | — |
-| `LLM_API_KEY` | 模型 key（只进 agent 子进程环境） | — |
-| `CODEX_BIN` / `CODEX_EXPECTED_VERSION` | codex 路径 / 期望版本 | `codex` / 空 |
-| `AGENT_TIMEOUT_SEC` | 单次 codex 会话超时 | `1800` |
+| `LLM_API_KEY` | 模型 key；写入 0600 配置文件，只进 agent 子进程 | — |
+| `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` | Dashboard 登录凭据；密码空 = 关闭 | `admin` / 空 |
 | `AGENT_CONCURRENCY` | 并发任务数 | `2` |
+
+</details>
+
+<details>
+<summary><b>高级变量（有默认值，按需覆盖）</b></summary>
+
+| 变量 | 说明 | 默认 |
+| --- | --- | --- |
+| `MIN_ACCESS_LEVEL` | 触发者角色下限（Developer = 30） | `30` |
+| `TRIAGE_ENABLED` | 新 issue 自动巡检 | `true` |
+| `TRIAGE_QUOTA_PER_HOUR` | 每项目每小时巡检上限 | `20` |
+| `SWEEP_ENABLED` / `SWEEP_INTERVAL_SEC` | 周期扫描总开关 / 间隔秒数 | `true` / `1800` |
+| `SWEEP_RESOLVE_ENABLED` | commit 引用自动回帖/关闭 | `true` |
+| `RELEASE_ENABLED` / `RELEASE_LOOKBACK_DAYS` | Tag Push 自动 Release / 首个 tag 回溯天数 | `true` / `365` |
+| `AGENT_TIMEOUT_SEC` | 单次 codex 会话超时 | `1800` |
 | `DIFF_MAX_FILES` / `DIFF_MAX_LINES` | 改动规模上限 | `50` / `2000` |
 | `FORBIDDEN_PATHS` | 禁改路径 | CI 配置、密钥… |
-| `LOG_DIR` / `LOG_RETENTION_DAYS` | 日志目录 / 保留天数 | `/data/logs` / `14` |
+| `LOG_RETENTION_DAYS` / `TASK_RETENTION_DAYS` | 日志 / 终态任务保留天数 | `14` / `90` |
 | `ADMIN_TOKEN` | `/tasks` 的 token；空 = 自动生成 | 空 |
 | `DASHBOARD_ENABLED` | Dashboard 总开关 | `true` |
-| `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` | Dashboard 的 HTTP Basic 凭据；密码空 = 关闭 | `admin` / 空 |
+| `CONFIG_FILE` | 配置文件路径 | `/data/config.json` |
 
 </details>
 
@@ -225,14 +260,14 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 655 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 672 项，无需 GitLab / 无需 LLM
 ```
 
 预览 Dashboard（临时 SQLite + 样例任务，不接真 GitLab）：
 
 ```bash
 uv run python scripts/preview_dashboard.py
-# http://127.0.0.1:8099/dashboard；Basic Auth: admin / preview2026
+# http://127.0.0.1:8099/login；用户名 admin / 密码 preview2026
 ```
 
 测试分层：
@@ -275,14 +310,14 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 655 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 672 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
 | 自动修（真件） | ✅ 巡检判定 eligible → 内部派生 fix → 真 codex 修复 → draft MR（父任务链、draft、Closes 均验证） |
 | 重复/指派 | ✅ 高置信重复关联并关闭；CODEOWNERS 命中即指派；GitLab assign/link/close API 已真机验证 |
 | 合并解释（真件） | ✅ 真 GitLab MR merge → 不 clone、只看 diff → 真 codex 解释评论 + 状态：已合并 |
 | 周期扫描 / 自动关闭 | ✅ 真 GitLab CE 19.5.3：open issue → 回帖/`状态：已解决`/关闭；GitLab autoclose 先关闭时，近期 closed issue 也会补回帖/标签，marker 幂等 |
 | 自动 Release | ✅ 真 GitLab CE 19.5.3：Tag Push → Release、previous tag compare、修复/新功能分组；已有 Release 跳过由假件覆盖 |
-| Dashboard | ✅ 只读观测台：HTTP Basic、总览/失败中心/项目聚合/最近任务/任务详情，655 项测试覆盖；当前仅单实例 SQLite |
+| Dashboard | ✅ 只读观测台：登录页 + session、7 日趋势/失败中心/项目/最近任务/任务详情；首次初始化为 `/setup`，配置页 `/settings`；当前仅单实例 SQLite |
 | 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
 | 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |
 | 只读 MCP | ✅ 11 个工具在真实 GitLab 数据上逐个验证（含真实 CI 日志） |

@@ -7,39 +7,75 @@ webhook、40 次永久禁用，所以任何异常都只落日志、响应仍是 
 正常运行时不会出现；比"静默 200 装作收到了"更容易排查。
 
 `/healthz` 仍然不返回任务信息；需要排障时走两个独立的只读页面：
-`/tasks`（token）与 `/dashboard`（HTTP Basic，默认关闭）。
+`/tasks`（token）与 `/dashboard`（登录页 + session，默认关闭）。
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import hmac
 import json
 import logging
+import os
+import secrets
+import signal
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from core import __version__
+from core.auth_view import render_login
 from core.dashboard_view import DashboardData, render_dashboard, render_dashboard_task
 from core.logging_setup import attach_uvicorn_loggers, configure_logging
 from core.models import TriggerKind
+from core.setup_view import render_settings, render_setup, render_setup_done
 from core.states import ACTIVE_STATES, TaskKind, TaskState
 from core.tasks_view import TaskFilters, render_task_detail, render_tasks_page, task_to_dict
-from gateway.config import Settings
+from gateway.auth import (
+    SESSION_COOKIE,
+    SESSION_TTL,
+    create_session,
+    credentials_match,
+    safe_next,
+    verify_session,
+)
+from gateway.config import Settings, load_settings
+from gateway.config_store import (
+    REQUIRED_KEYS,
+    SECRET_KEYS,
+    form_values,
+    is_initialized,
+    public_values,
+    read_config,
+    secret_state,
+    validate_config,
+    write_config,
+)
 from gateway.permissions import PermissionChecker
 from gateway.runtime import Runtime, build_production_runtime
 from gateway.webhook import parse_webhook, verify_token
 
 logger = logging.getLogger(__name__)
+
+
+async def _form_data(request: Request) -> dict[str, str]:
+    """只解析 urlencoded 表单，避免为了登录/配置页引入 python-multipart 依赖。"""
+    content_type = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" not in content_type:
+        return {}
+    raw = await request.body()
+    try:
+        parsed = parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+    except UnicodeDecodeError:
+        return {}
+    return {key: values[-1] for key, values in parsed.items() if values}
 
 
 def create_app(*, settings: Settings | None = None, runtime: Runtime | None = None) -> FastAPI:
@@ -48,7 +84,7 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
     测试通过 `runtime=build_runtime(..., scm=FakeSCM(), vcs=FakeVCS())` 注入假适配器；
     不注入时装配 M2 的真实适配器（git / codex / uv）。
     """
-    settings = settings or Settings()
+    settings = settings or load_settings()
     configure_logging(settings.log_level, settings.log_format)
     attach_uvicorn_loggers()
     rt = runtime or build_production_runtime(settings)
@@ -70,9 +106,11 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
         else:
             logger.info("只读任务页已关闭（TASKS_PAGE_ENABLED=false 或无法持久化 token）")
         if settings.dashboard_active:
-            logger.info("Dashboard 已启用：GET /dashboard（HTTP Basic）")
+            logger.info("Dashboard 已启用：GET /login → session → /dashboard")
         else:
-            logger.info("Dashboard 已关闭（DASHBOARD_ENABLED=false 或 DASHBOARD_PASSWORD 为空）")
+            logger.info(
+                "Dashboard 已关闭（DASHBOARD_ENABLED=false 或未设置密码）；/setup 仍在初始化模式"
+            )
         worker_job: asyncio.Task[None] | None = None
         if rt.worker is not None:
             worker_job = asyncio.create_task(rt.worker.run_forever(), name="mini-gitlab-bot-worker")
@@ -203,32 +241,218 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
         )
         return response
 
-    def _dashboard_denied(request: Request) -> PlainTextResponse | None:
-        """HTTP Basic 鉴权；未配置密码时整个 Dashboard 404（不开放默认入口）。"""
-        if not settings.dashboard_active:
-            return PlainTextResponse("Not Found", status_code=404)
-        header = request.headers.get("authorization", "")
-        scheme, _, encoded = header.partition(" ")
-        if scheme.lower() != "basic" or not encoded.strip():
-            return _dashboard_unauthorized()
-        try:
-            decoded = base64.b64decode(encoded.strip(), validate=True).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError):
-            return _dashboard_unauthorized()
-        user, separator, password = decoded.partition(":")
-        if not separator:
-            return _dashboard_unauthorized()
-        user_ok = hmac.compare_digest(user.encode("utf-8"), settings.dashboard_username.encode())
-        pass_ok = hmac.compare_digest(
-            password.encode("utf-8"), settings.dashboard_password.encode()
+    def _configured() -> bool:
+        """配置文件完整，或环境变量已经提供全部必填项，即视为已初始化。"""
+        if is_initialized(settings.config_file):
+            return True
+        return all(bool(getattr(settings, key, None)) for key in REQUIRED_KEYS)
+
+    def _setup_open() -> bool:
+        return not _configured()
+
+    def _current_user(request: Request) -> str | None:
+        return verify_session(settings, request.cookies.get(SESSION_COOKIE), now=rt.clock())
+
+    def _login_target(request: Request) -> str:
+        query = f"?{request.url.query}" if request.url.query else ""
+        return f"{request.url.path}{query}"
+
+    def _require_user(request: Request) -> RedirectResponse | None:
+        if _current_user(request) is not None:
+            return None
+        if _setup_open():
+            return RedirectResponse("/setup", status_code=303)
+        target = _login_target(request)
+        return RedirectResponse(f"/login?{urlencode({'next': target})}", status_code=303)
+
+    def _same_origin(request: Request) -> bool:
+        origin = request.headers.get("origin")
+        if not origin:
+            return True
+        return urlparse(origin).netloc == request.headers.get("host", "")
+
+    def _render_login_page(request: Request, *, error: str = "", status: int = 200) -> HTMLResponse:
+        return HTMLResponse(
+            render_login(
+                next_path=safe_next(request.query_params.get("next")),
+                error=error,
+                notice=request.query_params.get("notice", ""),
+                username=request.query_params.get("username", settings.dashboard_username),
+            ),
+            status_code=status,
+            headers=_DASHBOARD_HEADERS,
         )
-        if not (user_ok and pass_ok):
-            return _dashboard_unauthorized()
-        return None
+
+    @app.get("/login")
+    async def login_page(request: Request) -> Any:
+        if _setup_open():
+            return RedirectResponse("/setup", status_code=303)
+        if not settings.dashboard_active:
+            raise HTTPException(status_code=404, detail="Not Found")
+        user = _current_user(request)
+        if user is not None:
+            return RedirectResponse(safe_next(request.query_params.get("next")), status_code=303)
+        return _render_login_page(request)
+
+    @app.post("/login")
+    async def login_submit(request: Request) -> Any:
+        if not settings.dashboard_active:
+            raise HTTPException(status_code=404, detail="Not Found")
+        form = await _form_data(request)
+        username = form.get("username", "")
+        password = form.get("password", "")
+        if not credentials_match(settings, username, password):
+            logger.warning("Dashboard 登录失败：username=%s", username[:40])
+            return _render_login_page(
+                request,
+                error="用户名或密码不正确。",
+                status=401,
+            )
+        response = RedirectResponse(safe_next(form.get("next", "/dashboard")), status_code=303)
+        response.set_cookie(
+            SESSION_COOKIE,
+            create_session(settings, username, now=rt.clock()),
+            max_age=int(SESSION_TTL.total_seconds()),
+            httponly=True,
+            samesite="strict",
+            path="/",
+        )
+        return response
+
+    @app.post("/logout")
+    async def logout() -> RedirectResponse:
+        response = RedirectResponse("/login", status_code=303)
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return response
+
+    @app.get("/setup")
+    async def setup_page() -> Any:
+        if not _setup_open():
+            return RedirectResponse("/login", status_code=303)
+        current = read_config(settings.config_file)
+        values = public_values(current, settings.model_dump())
+        if not current.get("webhook_secret"):
+            values["webhook_secret"] = secrets.token_hex(32)
+        return HTMLResponse(
+            render_setup(values=values, secret_state=secret_state(current)),
+            headers=_DASHBOARD_HEADERS,
+        )
+
+    @app.post("/setup")
+    async def setup_submit(request: Request) -> Any:
+        if not _setup_open():
+            logger.warning("已初始化后仍收到 /setup POST，已拒绝")
+            return PlainTextResponse("Forbidden", status_code=403)
+        if not _same_origin(request):
+            return PlainTextResponse("Forbidden", status_code=403)
+        form = await _form_data(request)
+        current = read_config(settings.config_file)
+        merged = form_values(form, current)
+        errors = validate_config(merged)
+        if errors:
+            values = public_values(current, settings.model_dump())
+            for key, value in form.items():
+                if key not in SECRET_KEYS:
+                    values[key] = value
+            # webhook secret 是用户马上要复制到 GitLab 的值，错误时保留并重新显示
+            values["webhook_secret"] = form.get("webhook_secret", "")
+            return HTMLResponse(
+                render_setup(
+                    values=values,
+                    errors=errors,
+                    secret_state=secret_state(current),
+                ),
+                status_code=400,
+                headers=_DASHBOARD_HEADERS,
+            )
+        write_config(settings.config_file, merged)
+        logger.info("初始化配置已写入 %s（0600），等待重启生效", settings.config_file)
+        return RedirectResponse("/setup/done", status_code=303)
+
+    @app.get("/setup/done")
+    async def setup_done() -> Any:
+        if not is_initialized(settings.config_file):
+            return RedirectResponse("/setup", status_code=303)
+        return HTMLResponse(render_setup_done(), headers=_DASHBOARD_HEADERS)
+
+    @app.post("/setup/restart")
+    async def setup_restart(request: Request) -> Any:
+        if not is_initialized(settings.config_file):
+            raise HTTPException(status_code=404, detail="Not Found")
+        if not _same_origin(request):
+            return PlainTextResponse("Forbidden", status_code=403)
+        logger.info("收到初始化后的重启请求，1 秒后退出等待容器拉起")
+        _schedule_restart()
+        return RedirectResponse("/login?notice=重启中，完成后请重新登录", status_code=303)
+
+    @app.get("/settings")
+    async def settings_page(request: Request) -> Any:
+        denied = _require_user(request)
+        if denied is not None:
+            return denied
+        current = read_config(settings.config_file)
+        values = public_values(current, settings.model_dump())
+        effective = {**settings.model_dump(), **current}
+        return HTMLResponse(
+            render_settings(
+                username=_current_user(request) or "",
+                values=values,
+                secret_state=secret_state(effective),
+                notice="配置已保存，重启后生效。" if request.query_params.get("saved") else "",
+                restart=bool(request.query_params.get("saved")),
+            ),
+            headers=_DASHBOARD_HEADERS,
+        )
+
+    @app.post("/settings")
+    async def settings_submit(request: Request) -> Any:
+        denied = _require_user(request)
+        if denied is not None:
+            return denied
+        if not _same_origin(request):
+            return PlainTextResponse("Forbidden", status_code=403)
+        form = await _form_data(request)
+        current = read_config(settings.config_file)
+        merged = form_values(form, current)
+        errors = validate_config(merged)
+        if errors:
+            values = public_values(current, settings.model_dump())
+            for key, value in form.items():
+                if key not in SECRET_KEYS:
+                    values[key] = value
+            effective = {**settings.model_dump(), **current}
+            return HTMLResponse(
+                render_settings(
+                    username=_current_user(request) or "",
+                    values=values,
+                    errors=errors,
+                    secret_state=secret_state(effective),
+                ),
+                status_code=400,
+                headers=_DASHBOARD_HEADERS,
+            )
+        write_config(settings.config_file, merged)
+        logger.info("配置页更新已写入 %s，等待重启生效", settings.config_file)
+        return RedirectResponse("/settings?saved=1", status_code=303)
+
+    @app.post("/settings/restart")
+    async def settings_restart(request: Request) -> Any:
+        denied = _require_user(request)
+        if denied is not None:
+            return denied
+        if not _same_origin(request):
+            return PlainTextResponse("Forbidden", status_code=403)
+        logger.info("收到配置页重启请求，1 秒后退出等待容器拉起")
+        _schedule_restart()
+        return RedirectResponse("/login?notice=重启中，完成后请重新登录", status_code=303)
 
     @app.get("/dashboard")
     async def dashboard_page(request: Request) -> Any:
-        denied = _dashboard_denied(request)
+        if _setup_open():
+            return RedirectResponse("/setup", status_code=303)
+        if not settings.dashboard_active:
+            raise HTTPException(status_code=404, detail="Not Found")
+        denied = _require_user(request)
         if denied is not None:
             return denied
         now = rt.clock()
@@ -237,6 +461,7 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
             projects = rt.store.project_summaries(limit=50)
             recent = rt.store.list_tasks(limit=20)
             failures = rt.store.list_tasks(state=TaskState.FAILED, limit=8)
+            daily = rt.store.daily_counts(since=now - timedelta(days=7))
             stalled = await _has_stalled_task(rt, settings.ready_stale_sec)
         except Exception:  # noqa: BLE001 观测页失败不能把堆栈/路径带出去
             logger.exception("Dashboard 数据读取失败")
@@ -266,6 +491,8 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
                     failures=tuple(failures),
                     metrics=metric_values,
                     gitlab_url=settings.gitlab_url,
+                    daily=tuple(daily),
+                    username=_current_user(request) or settings.dashboard_username,
                 )
             ),
             headers=_DASHBOARD_HEADERS,
@@ -273,7 +500,11 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
 
     @app.get("/dashboard/task/{task_id}")
     async def dashboard_task(request: Request, task_id: str) -> Any:
-        denied = _dashboard_denied(request)
+        if _setup_open():
+            return RedirectResponse("/setup", status_code=303)
+        if not settings.dashboard_active:
+            raise HTTPException(status_code=404, detail="Not Found")
+        denied = _require_user(request)
         if denied is not None:
             return denied
         task = rt.store.get(task_id)
@@ -457,19 +688,11 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
     return app
 
 
-#: 观测页含仓库名/失败原因，禁止共享缓存；Basic 凭据由浏览器自行处理。
+#: 观测页含仓库名/失败原因，禁止共享缓存；登录页/setup 同样不缓存。
 _DASHBOARD_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
 }
-
-
-def _dashboard_unauthorized() -> PlainTextResponse:
-    return PlainTextResponse(
-        "unauthorized",
-        status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="mini-gitlab-bot", charset="UTF-8"'},
-    )
 
 
 def _read_log_tail(log_path: str | None, *, limit: int = 40) -> tuple[str, int]:
@@ -495,6 +718,15 @@ async def _has_stalled_task(runtime: Runtime, stale_sec: int) -> bool:
             if task.lease_expires_at is not None and task.lease_expires_at < cutoff:
                 return True
     return False
+
+
+def _schedule_restart(*, delay: float = 1.0) -> None:
+    """延迟给响应留出写回时间，然后让容器主进程退出并由 restart policy 拉起。"""
+
+    def _stop() -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Timer(delay, _stop).start()
 
 
 #: uvicorn 目标。构造过程无副作用（`SqliteStore` 懒连接），所以导入即可用。
