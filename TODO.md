@@ -8,7 +8,7 @@
    并按提交类型生成类似 GitHub Release 的中文发布说明。实现见 `core/release.py` /
    `core/release_orchestrator.py`，配置见 `RELEASE_*`。
 
-验收：`uv run pytest -q`（654 项）、`uv run ruff check .`、`uv run ruff format --check .`。
+验收：`uv run pytest -q`（655 项）、`uv run ruff check .`、`uv run ruff format --check .`。
 
 ## 进行中：只读 Dashboard
 
