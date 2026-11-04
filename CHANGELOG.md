@@ -6,7 +6,7 @@
 
 ### 新增
 
-- **只读 Dashboard**（`GET /dashboard`）：HTTP Basic 鉴权；总览健康/队列/24h 统计、最近任务、失败中心、项目聚合与 sweep/release 进程指标；手动刷新，不提供重试/取消/手动触发。当前实例只看自己的 SQLite。
+- **只读 Dashboard**（`GET /dashboard`）：HTTP Basic 鉴权；总览健康/队列/24h 统计、最近任务、失败中心、项目聚合与 sweep/release 进程指标；手动刷新，不提供重试/取消/手动触发。当前实例只看自己的 SQLite。界面按 `DESIGN.md` 的 Apple 式产品画廊语言实现，并提供本地样例预览脚本。
 
 ## [0.2.1] - 2026-11-04
 

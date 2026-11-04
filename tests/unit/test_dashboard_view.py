@@ -113,3 +113,13 @@ def test_dashboard_task_detail_renders_events_and_issue_link() -> None:
     assert "queued" in body and "failed" in body
     assert "codex log tail" in body
     assert "返回 Dashboard" in body
+
+
+def test_dashboard_uses_design_md_tokens_and_single_accent() -> None:
+    body = render_dashboard(make_data())
+    assert "--color-primary: #0066cc" in body
+    assert "SF Pro Display" in body and "SF Pro Text" in body
+    assert "font-size: 56px" in body
+    assert "linear-gradient" not in body
+    assert "box-shadow" not in body
+    assert "text-shadow" not in body

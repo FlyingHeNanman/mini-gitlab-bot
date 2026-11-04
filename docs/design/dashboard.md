@@ -52,7 +52,17 @@
 
 ---
 
-## 4. 页面结构（MVP）
+## 4. 视觉规范
+
+Dashboard 采用 `DESIGN.md` 的 Apple 式产品画廊语言，不另立一套后台样式：
+
+- 深黑 global nav（44px）+ parchment 磨砂 sub-nav（52px，sticky）；
+- 白色 hero → parchment 总览 → 深色最近任务 → 白色失败中心 → parchment 项目 → 深色指标 → parchment footer；
+- Action Blue `#0066cc` 只用于链接、主/次 CTA 和 focus ring；状态用 ink / muted / tile 明暗表达；
+- 正文 17px，display 600 + 负字距；卡片 `lg(18px)` + hairline，无阴影、无装饰渐变；
+- 主 CTA 是全圆角 pill，按压 `scale(.95)`；section 80px，断点 1440 / 1068 / 833 / 640 / 419。
+
+## 5. 页面结构（MVP）
 
 `GET /dashboard` 单页，锚点分区：
 
@@ -68,7 +78,7 @@
 
 ---
 
-## 5. 数据来源
+## 6. 数据来源
 
 | 数据 | 来源 |
 | --- | --- |
@@ -89,7 +99,7 @@
 
 ---
 
-## 6. 安全边界
+## 7. 安全边界
 
 - 只读 GET；写方法不存在（第二期再加操作时，必须单独设计 CSRF、审计与权限）。
 - 所有外部文本 HTML 转义，防止项目路径、失败原因、事件 detail 注入。
@@ -99,7 +109,7 @@
 
 ---
 
-## 7. 第二期候选（未实现）
+## 8. 第二期候选（未实现）
 
 - 失败任务「重试」、非终态任务「取消」；
 - 手动触发 triage / sweep / release；

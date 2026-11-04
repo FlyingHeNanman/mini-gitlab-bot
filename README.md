@@ -219,11 +219,20 @@ python scripts/migrate_labels.py --project group/project-a --apply    # 执行
 
 ## 开发
 
+协作约束见 [AGENTS.md](AGENTS.md)；**任何 UI 设计与实现先读 [DESIGN.md](DESIGN.md)**，以其中的 token 和版面规范为准。
+
 ```bash
 export UV_CACHE_DIR=$PWD/.uv-cache     # 沙箱里必须可写
 uv sync
 uv run ruff check . && uv run ruff format --check .
-uv run pytest                          # 654 项，无需 GitLab / 无需 LLM
+uv run pytest                          # 655 项，无需 GitLab / 无需 LLM
+```
+
+预览 Dashboard（临时 SQLite + 样例任务，不接真 GitLab）：
+
+```bash
+uv run python scripts/preview_dashboard.py
+# http://127.0.0.1:8099/dashboard；Basic Auth: admin / preview2026
 ```
 
 测试分层：
@@ -266,14 +275,14 @@ docs/      PLAN 事实核查 · 文案模板 · 发版流程
 
 | 项 | 状态 |
 | --- | --- |
-| 单元 + 集成测试 | ✅ 654 项全绿（CI 每次 push/PR 都跑） |
+| 单元 + 集成测试 | ✅ 655 项全绿（CI 每次 push/PR 都跑） |
 | 自动巡检（真件） | ✅ GitLab CE 19.5.3 + 真 codex 0.166 + Ark：新 issue → 只读检出 → 复现 → 中文标签/评论，重开幂等 |
 | 自动修（真件） | ✅ 巡检判定 eligible → 内部派生 fix → 真 codex 修复 → draft MR（父任务链、draft、Closes 均验证） |
 | 重复/指派 | ✅ 高置信重复关联并关闭；CODEOWNERS 命中即指派；GitLab assign/link/close API 已真机验证 |
 | 合并解释（真件） | ✅ 真 GitLab MR merge → 不 clone、只看 diff → 真 codex 解释评论 + 状态：已合并 |
 | 周期扫描 / 自动关闭 | ✅ 真 GitLab CE 19.5.3：open issue → 回帖/`状态：已解决`/关闭；GitLab autoclose 先关闭时，近期 closed issue 也会补回帖/标签，marker 幂等 |
 | 自动 Release | ✅ 真 GitLab CE 19.5.3：Tag Push → Release、previous tag compare、修复/新功能分组；已有 Release 跳过由假件覆盖 |
-| Dashboard | ✅ 只读观测台：HTTP Basic、总览/失败中心/项目聚合/最近任务/任务详情，654 项测试覆盖；当前仅单实例 SQLite |
+| Dashboard | ✅ 只读观测台：HTTP Basic、总览/失败中心/项目聚合/最近任务/任务详情，655 项测试覆盖；当前仅单实例 SQLite |
 | 真 GitLab 闭环 | ✅ GitLab CE 19.5：打标签 → draft MR → 单条评论 → 标签流转，15/15 断言 |
 | 真 codex 修复 | ✅ codex 0.157.1 + 内网模型端点：自主改代码、跑 pytest、写报告，41 秒 |
 | 只读 MCP | ✅ 11 个工具在真实 GitLab 数据上逐个验证（含真实 CI 日志） |
