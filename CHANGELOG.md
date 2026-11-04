@@ -11,10 +11,11 @@
 - **配置页**：登录后 `/settings` 可修改基础/高级变量；secret 不回显，留空保持；保存做 Origin 校验、原子写入。
 - **登录页 + session**：`/login` 替代浏览器 HTTP Basic 弹框；HMAC 签名 HttpOnly cookie（SameSite=Strict，12h），改密码旧 session 失效。
 - **Dashboard 重做**：按新版 `DESIGN.md` 的「云图柔板 / Dusty Canvas」重写总览、失败中心、项目列表、7 日趋势、任务详情、登录与配置页。
+- **导航拆页**：最近任务/项目从页面内锚点改为 `/dashboard/recent`、`/dashboard/projects` 独立页，导航栏按当前页高亮。
 
 ### 测试
 
-- 全量 **672 项**测试通过，`ruff check` / `ruff format --check` 干净。
+- 全量 **677 项**测试通过，`ruff check` / `ruff format --check` 干净。
 
 ## [0.3.0] - 2026-11-04
 

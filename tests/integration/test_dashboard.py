@@ -70,6 +70,8 @@ async def test_dashboard_without_password_fails_closed_or_goes_to_setup(
     if response.status_code == 303:
         assert response.headers["location"] == "/setup"
     assert (await get(app, "/dashboard/task/task-x")).status_code in {303, 404}
+    assert (await get(app, "/dashboard/recent")).status_code in {303, 404}
+    assert (await get(app, "/dashboard/projects")).status_code in {303, 404}
 
 
 async def test_dashboard_uses_login_page_and_session(make_runtime, settings) -> None:
@@ -97,6 +99,8 @@ async def test_dashboard_uses_login_page_and_session(make_runtime, settings) -> 
 
     page = await get(app, "/dashboard", cookies=httpx.Cookies({"mgb_session": cookie}))
     assert page.status_code == 200
+    assert (await get(app, "/dashboard/recent")).status_code == 303
+    assert (await get(app, "/dashboard/projects")).status_code == 303
 
 
 async def test_dashboard_shows_real_task_data_without_admin_token(
@@ -148,7 +152,7 @@ async def test_dashboard_task_detail_is_login_protected(make_runtime, settings, 
         assert "diff 超限" in detail.text
         assert "a.py +2000" in detail.text
         assert "事件时间线" in detail.text
-        assert "返回 Dashboard" in detail.text
+        assert "返回最近任务" in detail.text
         assert TOKEN not in detail.text
 
         missing = await client.get("/dashboard/task/task-doesnotexist")
@@ -172,6 +176,42 @@ async def test_dashboard_is_read_only_and_ignores_admin_token(
     assert (
         await get(app, "/dashboard", cookies=httpx.Cookies({"X-Admin-Token": TOKEN}))
     ).status_code == 303
+
+
+async def test_dashboard_nav_switches_to_standalone_recent_and_projects_pages(
+    make_runtime, settings, clock
+) -> None:
+    runtime, _ = make_runtime(with_worker=True, admin_token=TOKEN)
+    first = runtime.store.enqueue(make_trigger(issue_iid=1, delivery_key="n-1"), now=clock()).task
+    second = runtime.store.enqueue(make_trigger(issue_iid=2, delivery_key="n-2"), now=clock()).task
+    assert first is not None and second is not None
+    runtime.store.fail(second.id, stage="running", reason="模型返回空结果", now=clock())
+    app = make_app(runtime, settings)
+
+    async with logged_in_client(app) as client:
+        overview = await client.get("/dashboard")
+        assert overview.status_code == 200
+        assert '<a class="active" href="/dashboard">总览</a>' in overview.text
+        assert 'href="/dashboard/recent">查看全部</a>' in overview.text
+        assert 'href="/dashboard/projects">全部 1 个</a>' in overview.text
+
+        recent = await client.get("/dashboard/recent")
+        assert recent.status_code == 200
+        assert '<a class="active" href="/dashboard/recent">最近任务</a>' in recent.text
+        assert '<a class="active" href="/dashboard">总览</a>' not in recent.text
+        assert first.short_id in recent.text and second.short_id in recent.text
+        assert "Task stream" in recent.text
+
+        projects = await client.get("/dashboard/projects")
+        assert projects.status_code == 200
+        assert '<a class="active" href="/dashboard/projects">项目</a>' in projects.text
+        assert '<a class="active" href="/dashboard">总览</a>' not in projects.text
+        assert "group/project-a" in projects.text
+        assert "Repositories" in projects.text
+
+        task = await client.get(f"/dashboard/task/{second.id}")
+        assert task.status_code == 200
+        assert '<a class="active" href="/dashboard/recent">最近任务</a>' in task.text
 
 
 async def test_dashboard_store_failure_returns_503_without_details(

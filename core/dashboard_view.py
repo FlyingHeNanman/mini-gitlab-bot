@@ -89,7 +89,7 @@ def render_dashboard(data: DashboardData) -> str:
     health_class, health_title, health_note = _health(data)
     body = f"""
 <div class="shell">
-  {_topbar(data, health_class, health_title)}
+  {_topbar(data, health_class, health_title, active="overview")}
   <header class="hero">
     <div>
       <p class="eyebrow">只读观测台 · 当前实例</p>
@@ -135,6 +135,92 @@ def render_dashboard(data: DashboardData) -> str:
 </div>
 """
     return document("运维观测台 · mini-gitlab-bot", body)
+
+
+def render_dashboard_recent(data: DashboardData) -> str:
+    """最近任务独立页：导航栏“最近任务”的落点，展示最多 50 条。"""
+    health_class, health_title, health_note = _health(data)
+    body = f"""
+<div class="shell">
+  {_topbar(data, health_class, health_title, active="recent")}
+  <header class="hero">
+    <div>
+      <p class="eyebrow">只读观测台 · 任务流</p>
+      <h1>最近任务</h1>
+      <p class="hero-lead">按最后更新时间倒序，最多展示 50 条；点任意一条看失败现场与日志。</p>
+      <p class="hero-meta">
+        <span>最近刷新 {_fmt_datetime(data.now)} UTC</span>
+        <span>{len(data.recent)} 条记录</span>
+      </p>
+    </div>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="/dashboard/recent">刷新数据 <span aria-hidden="true">›</span></a>
+      <a class="btn btn-secondary" href="/dashboard">返回总览</a>
+    </div>
+  </header>
+
+  <section class="card section">
+    <div class="card-head">
+      <div>
+        <p class="card-label">Task stream</p>
+        <h2 class="card-title">队列里正在发生什么</h2>
+        <p class="card-sub">{html.escape(health_note)}</p>
+      </div>
+      <span class="pill pill-muted">只读</span>
+    </div>
+    <div class="list">{_recent_rows(data.recent, data.now, 50)}</div>
+  </section>
+
+  <footer class="foot">
+    <span><strong>mini-gitlab-bot</strong> · 最近任务 · 当前实例 SQLite</span>
+    <span>只读，不在这里重试 / 取消 · 所有时间 UTC</span>
+  </footer>
+</div>
+"""
+    return document("最近任务 · mini-gitlab-bot", body)
+
+
+def render_dashboard_projects(data: DashboardData) -> str:
+    """项目独立页：导航栏“项目”的落点，展示按最后活动排序的 50 个项目。"""
+    health_class, health_title, health_note = _health(data)
+    body = f"""
+<div class="shell">
+  {_topbar(data, health_class, health_title, active="projects")}
+  <header class="hero">
+    <div>
+      <p class="eyebrow">只读观测台 · 项目</p>
+      <h1>项目节奏</h1>
+      <p class="hero-lead">这是本实例见过的项目，按最近活动倒序；每行只汇总任务结果，不读 GitLab 实时状态。</p>
+      <p class="hero-meta">
+        <span>{len(data.projects)} 个项目</span>
+        <span>最近刷新 {_fmt_datetime(data.now)} UTC</span>
+      </p>
+    </div>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="/dashboard/projects">刷新数据 <span aria-hidden="true">›</span></a>
+      <a class="btn btn-secondary" href="/dashboard">返回总览</a>
+    </div>
+  </header>
+
+  <section class="card section">
+    <div class="card-head">
+      <div>
+        <p class="card-label">Repositories</p>
+        <h2 class="card-title">每个仓库的节奏</h2>
+        <p class="card-sub">{html.escape(health_note)}</p>
+      </div>
+      <span class="pill pill-muted">{len(data.projects)} 个</span>
+    </div>
+    <div class="list">{_project_rows(data.projects, data.gitlab_url, data.now, 50)}</div>
+  </section>
+
+  <footer class="foot">
+    <span><strong>mini-gitlab-bot</strong> · 项目 · 当前实例 SQLite</span>
+    <span>只读汇总 · 项目链接指向 GitLab · 所有时间 UTC</span>
+  </footer>
+</div>
+"""
+    return document("项目 · mini-gitlab-bot", body)
 
 
 def render_dashboard_task(
@@ -218,7 +304,7 @@ def render_dashboard_task(
     )
     body = f"""
 <div class="shell">
-  {_topbar(None, "warn", state)}
+  {_topbar(None, "warn", state, active="recent")}
   <header class="hero">
     <div>
       <p class="eyebrow">任务档案</p>
@@ -226,7 +312,7 @@ def render_dashboard_task(
       <p class="hero-lead">{html.escape(task.project.path)} · issue #{task.issue_iid} · {html.escape(kind)}</p>
     </div>
     <div class="hero-actions">
-      <a class="btn btn-primary" href="/dashboard">返回 Dashboard</a>
+      <a class="btn btn-primary" href="/dashboard/recent">返回最近任务</a>
     </div>
   </header>
 
@@ -259,16 +345,23 @@ def render_dashboard_task(
     return document(f"任务 {task.short_id} · mini-gitlab-bot", body)
 
 
-def _topbar(data: DashboardData | None, health_class: str, health_title: str) -> str:
+def _topbar(
+    data: DashboardData | None, health_class: str, health_title: str, *, active: str = "overview"
+) -> str:
     username = data.username if data else "operator"
     initial = (username[:1] or "M").upper()
+
+    def item(label: str, href: str, key: str) -> str:
+        cls = ' class="active"' if active == key else ""
+        return f'<a{cls} href="{href}">{label}</a>'
+
     return f"""<div class="topbar">
   {brand()}
   <nav class="nav" aria-label="主导航">
-    <a class="active" href="/dashboard">总览</a>
-    <a href="/dashboard#recent">最近任务</a>
-    <a href="/dashboard#projects">项目</a>
-    <a href="/settings">配置</a>
+    {item("总览", "/dashboard", "overview")}
+    {item("最近任务", "/dashboard/recent", "recent")}
+    {item("项目", "/dashboard/projects", "projects")}
+    {item("配置", "/settings", "settings")}
   </nav>
   <div class="top-actions">
     <span class="health"><span class="dot {health_class}"></span>{html.escape(health_title)}</span>
@@ -370,51 +463,57 @@ def _stats_card(data: DashboardData) -> str:
 </section>"""
 
 
+def _recent_rows(tasks: Sequence[Task], now: datetime, limit: int) -> str:
+    if not tasks:
+        return '<p class="empty">还没有任务。</p>'
+    return "".join(
+        f"""<a class="list-row row-link" href="/dashboard/task/{html.escape(task.id)}">
+          <span class="icon-block icon-slate">{html.escape(_kind_mark(task.kind))}</span>
+          <span class="row-main">
+            <span class="row-title">{html.escape(task.project.path)} <span class="pill {STATE_PILLS.get(task.state, "pill-muted")}">{html.escape(STATE_LABELS.get(task.state, str(task.state)))}</span></span>
+            <span class="row-sub">#{task.issue_iid} · {html.escape(KIND_LABELS.get(task.kind, str(task.kind)))} · {html.escape(task.short_id)}</span>
+          </span>
+          <span class="row-end">{html.escape(_fmt_ago(task.updated_at, now))}</span>
+        </a>"""
+        for task in tasks[:limit]
+    )
+
+
 def _recent_card(data: DashboardData) -> str:
-    if not data.recent:
-        rows = '<p class="empty">还没有任务。</p>'
-    else:
-        rows = "".join(
-            f"""<a class="list-row row-link" href="/dashboard/task/{html.escape(task.id)}">
-              <span class="icon-block icon-slate">{html.escape(_kind_mark(task.kind))}</span>
-              <span class="row-main">
-                <span class="row-title">{html.escape(task.project.path)} <span class="pill {STATE_PILLS.get(task.state, "pill-muted")}">{html.escape(STATE_LABELS.get(task.state, str(task.state)))}</span></span>
-                <span class="row-sub">#{task.issue_iid} · {html.escape(KIND_LABELS.get(task.kind, str(task.kind)))} · {html.escape(task.short_id)}</span>
-              </span>
-              <span class="row-end">{html.escape(_fmt_ago(task.updated_at, data.now))}</span>
-            </a>"""
-            for task in data.recent[:8]
-        )
     return f"""<section class="card" id="recent">
   <div class="card-head">
     <div><p class="card-label">最近任务</p><h2 class="card-title">队列里正在发生什么</h2></div>
-    <a class="pill pill-muted" href="/dashboard#recent">最近 {len(data.recent)} 条</a>
+    <a class="pill pill-muted" href="/dashboard/recent">查看全部</a>
   </div>
-  <div class="list">{rows}</div>
+  <div class="list">{_recent_rows(data.recent, data.now, 8)}</div>
 </section>"""
 
 
+def _project_rows(
+    projects: Sequence[ProjectSummary], gitlab_url: str, now: datetime, limit: int
+) -> str:
+    if not projects:
+        return '<p class="empty">还没有项目数据。</p>'
+    return "".join(
+        f"""<a class="list-row row-link" href="{html.escape(_project_url(gitlab_url, project.project.path))}">
+          <span class="icon-block {"icon-blue" if index % 2 else "icon-slate"}">{html.escape(project.project.path[:1].upper())}</span>
+          <span class="row-main">
+            <span class="row-title">{html.escape(project.project.path)}</span>
+            <span class="row-sub">{project.total} 个任务 · 成功 {project.succeeded} · 失败 {project.failed}</span>
+          </span>
+          <span class="row-end">{project.active} 在飞<br>{html.escape(_fmt_ago(project.last_activity, now))}</span>
+        </a>"""
+        for index, project in enumerate(projects[:limit])
+    )
+
+
 def _projects_card(data: DashboardData) -> str:
-    if not data.projects:
-        rows = '<p class="empty">还没有项目数据。</p>'
-    else:
-        rows = "".join(
-            f"""<a class="list-row row-link" href="{html.escape(_project_url(data.gitlab_url, project.project.path))}">
-              <span class="icon-block {"icon-blue" if index % 2 else "icon-slate"}">{html.escape(project.project.path[:1].upper())}</span>
-              <span class="row-main">
-                <span class="row-title">{html.escape(project.project.path)}</span>
-                <span class="row-sub">{project.total} 个任务 · 成功 {project.succeeded} · 失败 {project.failed}</span>
-              </span>
-              <span class="row-end">{project.active} 在飞<br>{html.escape(_fmt_ago(project.last_activity, data.now))}</span>
-            </a>"""
-            for index, project in enumerate(data.projects[:6])
-        )
     return f"""<section class="card" id="projects">
   <div class="card-head">
     <div><p class="card-label">项目</p><h2 class="card-title">每个仓库的节奏</h2></div>
-    <span class="pill pill-muted">{len(data.projects)} 个</span>
+    <a class="pill pill-muted" href="/dashboard/projects">全部 {len(data.projects)} 个</a>
   </div>
-  <div class="list">{rows}</div>
+  <div class="list">{_project_rows(data.projects, data.gitlab_url, data.now, 6)}</div>
 </section>"""
 
 

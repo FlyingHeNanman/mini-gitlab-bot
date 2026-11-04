@@ -20,7 +20,7 @@ import os
 import secrets
 import signal
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from pathlib import Path
@@ -32,7 +32,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 
 from core import __version__
 from core.auth_view import render_login
-from core.dashboard_view import DashboardData, render_dashboard, render_dashboard_task
+from core.dashboard_view import (
+    DashboardData,
+    render_dashboard,
+    render_dashboard_projects,
+    render_dashboard_recent,
+    render_dashboard_task,
+)
 from core.logging_setup import attach_uvicorn_loggers, configure_logging
 from core.models import TriggerKind
 from core.setup_view import render_settings, render_setup, render_setup_done
@@ -446,26 +452,21 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
         _schedule_restart()
         return RedirectResponse("/login?notice=重启中，完成后请重新登录", status_code=303)
 
-    @app.get("/dashboard")
-    async def dashboard_page(request: Request) -> Any:
+    def _dashboard_guard(request: Request) -> Any | None:
         if _setup_open():
             return RedirectResponse("/setup", status_code=303)
         if not settings.dashboard_active:
             raise HTTPException(status_code=404, detail="Not Found")
-        denied = _require_user(request)
-        if denied is not None:
-            return denied
+        return _require_user(request)
+
+    async def _load_dashboard(request: Request) -> DashboardData:
         now = rt.clock()
-        try:
-            stats = rt.store.dashboard_stats(since=now - timedelta(hours=24))
-            projects = rt.store.project_summaries(limit=50)
-            recent = rt.store.list_tasks(limit=20)
-            failures = rt.store.list_tasks(state=TaskState.FAILED, limit=8)
-            daily = rt.store.daily_counts(since=now - timedelta(days=7))
-            stalled = await _has_stalled_task(rt, settings.ready_stale_sec)
-        except Exception:  # noqa: BLE001 观测页失败不能把堆栈/路径带出去
-            logger.exception("Dashboard 数据读取失败")
-            return PlainTextResponse("dashboard unavailable", status_code=503)
+        stats = rt.store.dashboard_stats(since=now - timedelta(hours=24))
+        projects = rt.store.project_summaries(limit=50)
+        recent = rt.store.list_tasks(limit=50)
+        failures = rt.store.list_tasks(state=TaskState.FAILED, limit=8)
+        daily = rt.store.daily_counts(since=now - timedelta(days=7))
+        stalled = await _has_stalled_task(rt, settings.ready_stale_sec)
         metric_values = {
             name: rt.metrics.value(name)
             for name in (
@@ -478,35 +479,51 @@ def create_app(*, settings: Settings | None = None, runtime: Runtime | None = No
                 "release_failures_total",
             )
         }
-        return HTMLResponse(
-            render_dashboard(
-                DashboardData(
-                    now=now,
-                    version=__version__,
-                    worker_enabled=rt.worker is not None,
-                    stalled=stalled,
-                    stats=stats,
-                    projects=tuple(projects),
-                    recent=tuple(recent),
-                    failures=tuple(failures),
-                    metrics=metric_values,
-                    gitlab_url=settings.gitlab_url,
-                    daily=tuple(daily),
-                    username=_current_user(request) or settings.dashboard_username,
-                )
-            ),
-            headers=_DASHBOARD_HEADERS,
+        return DashboardData(
+            now=now,
+            version=__version__,
+            worker_enabled=rt.worker is not None,
+            stalled=stalled,
+            stats=stats,
+            projects=tuple(projects),
+            recent=tuple(recent),
+            failures=tuple(failures),
+            metrics=metric_values,
+            gitlab_url=settings.gitlab_url,
+            daily=tuple(daily),
+            username=_current_user(request) or settings.dashboard_username,
         )
+
+    async def _render_dashboard_page(
+        request: Request, renderer: Callable[[DashboardData], str]
+    ) -> Any:
+        guard = _dashboard_guard(request)
+        if guard is not None:
+            return guard
+        try:
+            data = await _load_dashboard(request)
+        except Exception:  # noqa: BLE001 观测页失败不能把堆栈/路径带出去
+            logger.exception("Dashboard 数据读取失败")
+            return PlainTextResponse("dashboard unavailable", status_code=503)
+        return HTMLResponse(renderer(data), headers=_DASHBOARD_HEADERS)
+
+    @app.get("/dashboard")
+    async def dashboard_page(request: Request) -> Any:
+        return await _render_dashboard_page(request, render_dashboard)
+
+    @app.get("/dashboard/recent")
+    async def dashboard_recent_page(request: Request) -> Any:
+        return await _render_dashboard_page(request, render_dashboard_recent)
+
+    @app.get("/dashboard/projects")
+    async def dashboard_projects_page(request: Request) -> Any:
+        return await _render_dashboard_page(request, render_dashboard_projects)
 
     @app.get("/dashboard/task/{task_id}")
     async def dashboard_task(request: Request, task_id: str) -> Any:
-        if _setup_open():
-            return RedirectResponse("/setup", status_code=303)
-        if not settings.dashboard_active:
-            raise HTTPException(status_code=404, detail="Not Found")
-        denied = _require_user(request)
-        if denied is not None:
-            return denied
+        guard = _dashboard_guard(request)
+        if guard is not None:
+            return guard
         task = rt.store.get(task_id)
         if task is None:
             return PlainTextResponse("Not Found", status_code=404)
