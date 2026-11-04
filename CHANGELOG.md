@@ -2,15 +2,11 @@
 
 本项目的所有重要变更都记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
-
-### 新增
-
-- **周期扫描兼容 GitLab 默认 autoclose**：除 open issue 外，同时扫描近 `SWEEP_COMMIT_LOOKBACK_DAYS` 天更新过的 closed issue；GitLab 先关闭时仍补回帖与 `状态：已解决`，不再调用 close。closed issue 用评论 marker 幂等跳过，重启/重跑不重复计数或刷评论。
-- 新增 SCM 端口 `list_closed_issues` / `find_comment`，以及对应 GitLab、假件、Unavailable 实现。
+## [0.2.1] - 2026-11-04
 
 ### 修复
 
+- **兼容 GitLab 默认 autoclose**：sweep 除 open issue 外，同时扫描近 `SWEEP_COMMIT_LOOKBACK_DAYS` 天更新过的 closed issue；GitLab 用 `Closes/Fixes #N` 先关闭时，机器人仍补回帖与 `状态：已解决`，不再调用 close。closed issue 通过评论 marker 幂等跳过，重启/重跑不重复计数或刷评论。
 - **新项目标签缺失**：sweep 在 `add_labels` 前用 `LabelEnsurer` 幂等创建固定标签，避免新项目首次扫描 400。
 - **Release compare 链接缺失**：真 GitLab tag 对象没有顶层 `web_url`，改为从 `commit.web_url` 推导 tag 链接。
 

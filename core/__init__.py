@@ -6,4 +6,4 @@
 
 #: 版本号的唯一来源。`pyproject.toml` 里的 version 必须与它一致
 #: （`tests/unit/test_version.py` 会校验，防止两边漂移）。
-__version__ = "0.2.0"
+__version__ = "0.2.1"
