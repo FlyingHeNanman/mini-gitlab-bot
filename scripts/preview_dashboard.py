@@ -329,7 +329,7 @@ def main() -> None:
     base = Path(tempfile.mkdtemp(prefix="mgb-dashboard-preview-"))
     password = os.environ.get("DASHBOARD_PREVIEW_PASSWORD", "preview2026")
     settings = Settings(
-        webhook_secret="preview-secret",
+        webhook_secret="preview-secret-value-0123456789",
         repo_whitelist=["acme/payments", "acme/web-console", "acme/docs", "acme/edge-worker"],
         bot_username="mini-gitlab-bot",
         dashboard_username="admin",
@@ -341,7 +341,11 @@ def main() -> None:
         work_dir=base / "work",
         log_dir=base / "logs",
         gitlab_url="http://127.0.0.1:8929",
-        gitlab_token="",
+        gitlab_token="glpat-preview-token",
+        model_base_url="http://llm.internal/v1",
+        model_name="glm-preview",
+        llm_api_key="preview-llm-key",
+        config_file=base / "config.json",
     )
     store = SqliteStore(settings.db_path)
     runtime = build_runtime(
@@ -367,8 +371,8 @@ def main() -> None:
     app = create_app(settings=settings, runtime=runtime)
     host = os.environ.get("PREVIEW_HOST", "127.0.0.1")
     port = int(os.environ.get("PREVIEW_PORT", "8099"))
-    print(f"Dashboard preview: http://{host}:{port}/dashboard", flush=True)
-    print(f"Basic Auth: admin / {password}", flush=True)
+    print(f"Dashboard preview: http://{host}:{port}/login", flush=True)
+    print(f"Login: admin / {password}", flush=True)
     print(f"SQLite: {settings.db_path}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning")
 

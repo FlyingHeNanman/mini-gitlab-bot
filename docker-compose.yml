@@ -1,43 +1,36 @@
 # =============================================================================
-# 单容器部署（M5 重写；v0 的 twin-service 版本已删除 —— Renovate 不进本项目）
+# mini-gitlab-bot 单容器部署（默认直接拉镜像，不需要 clone / .env）
 # =============================================================================
-# 使用步骤：
-#   1. 复制 .env.example → .env 并填好（至少 WEBHOOK_SECRET / GITLAB_TOKEN /
-#      GITLAB_READONLY_TOKEN / REPO_WHITELIST）
-#   2. docker compose up -d --build
-#   3. docker compose exec bot python -c "import urllib.request as u; print(u.urlopen(
-#        'http://127.0.0.1:8080/readyz').read())"
+# 第一次部署：
+#   docker compose up -d
+#   打开 http://<host>:8080/setup 初始化，保存后按页面提示重启
 #
-# 注意：容器内**不要**再挂宿主机上的 codex 配置或 GitLab token 文件；
-# 所有凭据只走环境变量（见 PLAN §7 红线）。
+# 想固定版本：MGB_VERSION=0.4.0 docker compose up -d
+# 想从源码构建：docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 # =============================================================================
 
 services:
   bot:
-    build:
-      context: .
-      args:
-        # 想跟进 codex 版本时改这里，同时改 .env 的 CODEX_EXPECTED_VERSION（基线 6）
-        CODEX_VERSION: ${CODEX_VERSION:-0.163.0}
-    image: mini-gitlab-bot:latest
-    # init 让 PID 1 能正确回收孤儿进程（codex / uv / git 都会产生子进程）
+    image: ghcr.io/flyinghenanman/mini-gitlab-bot:${MGB_VERSION:-latest}
+    container_name: mini-gitlab-bot
     init: true
     restart: unless-stopped
-    env_file:
-      - .env
+    ports:
+      - "${MGB_PORT:-8080}:8080"
     environment:
-      # 覆盖 .env 里的默认值：容器内固定用这两个卷
-      LOG_DIR: /data/logs
-      UV_CACHE_DIR: /work/.uv-cache
+      PORT: 8080
+      CONFIG_FILE: /data/config.json
       DB_PATH: /data/tasks.db
       WORK_DIR: /work
-    ports:
-      - "8080:8080"
+      LOG_DIR: /data/logs
+      UV_CACHE_DIR: /work/.uv-cache
+      LOG_FORMAT: json
     volumes:
+      # 配置、SQLite、日志；首次初始化写入 config.json
       - bot-data:/data
+      # job 目录 + uv 缓存
       - bot-work:/work
     healthcheck:
-      # 就绪探针：数据库可读 + worker 在跑 + 没有卡死的任务
       test:
         - CMD
         - python
@@ -47,15 +40,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    # 给它时间把在飞任务的租约处理完（超时未完成会在下次启动被 recover 回队列）
+    # 给它时间把在飞任务的租约处理完
     stop_grace_period: 60s
     security_opt:
       - no-new-privileges:true
-      # codex 的 Linux 沙箱用 bubblewrap 创建非特权 user namespace；
-      # Docker 默认 seccomp 会拒绝，导致 agent 一条命令都执行不了
-      # （实测报 `bwrap: No permissions to create a new namespace`）。
-      # 这是运行 codex 的硬性要求；如果宿主机已开 userns 且自定义了 seccomp，
-      # 可以去掉这两行。
+      # codex 的 bubblewrap 需要非特权 user namespace；Docker 默认 seccomp 会拒绝
       - seccomp=unconfined
       - apparmor=unconfined
     cap_drop:

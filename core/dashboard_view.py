@@ -1,11 +1,11 @@
+# ruff: noqa: E501
 """Dashboard 只读页面的渲染（纯函数，不碰 HTTP / 数据库）。
 
-视觉规范以仓库根目录的 `DESIGN.md` 为准：Apple 式产品画廊语言——
+视觉规范以仓库根目录的 `DESIGN.md` 为准：云图柔板 / Dusty Canvas——
 
-* 深黑 global nav + parchment 磨砂 sub-nav；
-* 白色 / parchment / 近黑 tile 交替，靠表面色变化分段，不靠边框或阴影；
-* Action Blue 是唯一的交互强调色，正文 17px，display 600 + 负字距；
-* 全圆角 pill 主 CTA，按压 `scale(.95)`；没有装饰渐变，没有卡片阴影。
+* 蒙灰蓝外框 + 浅灰圆角应用容器 + 白色软阴影卡片；
+* 衬线标题配无衬线正文，珊瑚红只保留一个焦点；
+* 列表行优先于高密度表格，失败用浅红、警告用浅黄。
 
 数据由 `gateway` 采集，这里只负责把 `DashboardData` 变成 HTML。所有来自
 GitLab / SQLite 的文本一律 `html.escape`；只读，不提供重试 / 取消 / 手动触发。
@@ -17,11 +17,12 @@ import html
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
-from core.models import DashboardStats, ProjectSummary, Task, TaskEvent
-from core.states import TaskKind, TaskState, stage_label
+from core.models import DailyCount, DashboardStats, ProjectSummary, Task, TaskEvent
+from core.states import TaskKind, TaskState
+from core.ui_theme import brand, document
 
 KIND_LABELS: dict[TaskKind, str] = {
     TaskKind.FIX: "修复",
@@ -30,22 +31,34 @@ KIND_LABELS: dict[TaskKind, str] = {
     TaskKind.RELEASE: "Release",
 }
 
-STATE_CLASSES: dict[TaskState, str] = {
-    TaskState.QUEUED: "queued",
-    TaskState.PREPARING: "active",
-    TaskState.RUNNING: "active",
-    TaskState.VALIDATING: "active",
-    TaskState.PUSHING: "active",
-    TaskState.OPENING_MR: "active",
-    TaskState.FINALIZING: "active",
-    TaskState.SUCCEEDED: "ok",
-    TaskState.FAILED: "bad",
+STATE_LABELS: dict[TaskState, str] = {
+    TaskState.QUEUED: "排队",
+    TaskState.PREPARING: "准备",
+    TaskState.RUNNING: "执行中",
+    TaskState.VALIDATING: "验证",
+    TaskState.PUSHING: "推送",
+    TaskState.OPENING_MR: "开 MR",
+    TaskState.FINALIZING: "收尾",
+    TaskState.SUCCEEDED: "已完成",
+    TaskState.FAILED: "失败",
+}
+
+STATE_PILLS: dict[TaskState, str] = {
+    TaskState.QUEUED: "pill-muted",
+    TaskState.PREPARING: "pill-blue",
+    TaskState.RUNNING: "pill-blue",
+    TaskState.VALIDATING: "pill-blue",
+    TaskState.PUSHING: "pill-blue",
+    TaskState.OPENING_MR: "pill-blue",
+    TaskState.FINALIZING: "pill-blue",
+    TaskState.SUCCEEDED: "pill-muted",
+    TaskState.FAILED: "pill-failed",
 }
 
 METRICS = (
     ("sweep_runs_total", "Sweep 轮次"),
-    ("sweep_triaged_total", "Sweep 补建巡检"),
-    ("sweep_resolved_total", "Sweep 回收 issue"),
+    ("sweep_triaged_total", "补建巡检"),
+    ("sweep_resolved_total", "回收 issue"),
     ("sweep_errors_total", "Sweep 错误"),
     ("release_total", "Release 处理"),
     ("release_skipped_total", "Release 跳过"),
@@ -67,114 +80,147 @@ class DashboardData:
     failures: Sequence[Task]
     metrics: Mapping[str, float]
     gitlab_url: str
+    daily: Sequence[DailyCount] = ()
+    username: str = "admin"
 
 
 def render_dashboard(data: DashboardData) -> str:
-    """总览页：健康、队列、24h 统计、失败中心、最近任务、项目、运维指标。"""
+    """总览页：健康、7 日趋势、失败中心、最近任务、项目与运维指标。"""
     health_class, health_title, health_note = _health(data)
-    stats = data.stats
     body = f"""
-{_global_nav(data.version)}
-{_sub_nav()}
-
-<main>
-  <section class="hero">
-    <div class="wrap hero-inner">
-      <p class="hero-kicker">
-        <span class="status-dot {health_class}"></span>{html.escape(health_title)}
-      </p>
-      <h1>运维观测台</h1>
-      <p class="hero-lead">{html.escape(health_note)}</p>
-      <div class="hero-actions">
-        <a class="button-primary" href="#failures">查看需要关注</a>
-        <a class="button-secondary" href="#recent">查看最近任务</a>
-      </div>
-      <div class="hero-meta">
-        <span>上次刷新 {_fmt_time(data.now)} UTC</span>
-        <span>只读 · 当前实例 SQLite</span>
-      </div>
-    </div>
-  </section>
-
-  <section class="section section-parchment" id="overview">
-    <div class="wrap">
-      <div class="section-heading">
-        <p class="eyebrow">运行概况</p>
-        <h2>机器人现在怎么样</h2>
-        <p class="section-caption">
-          全部历史与最近 24 小时；数据来自当前 SQLite，刷新页面即可重新读取。
-        </p>
-      </div>
-      <div class="kpi-grid">{_kpi_cards(stats)}</div>
-    </div>
-  </section>
-
-  <section class="section section-dark" id="recent">
-    <div class="wrap">
-      <div class="section-heading on-dark">
-        <p class="eyebrow">最近任务</p>
-        <h2>队列里正在发生什么</h2>
-        <p class="section-caption">
-          最近 {len(data.recent)} 条；点击任务编号查看失败现场、事件时间线与日志尾部。
-        </p>
-      </div>
-      {_recent_tasks(data.recent, now=data.now, gitlab_url=data.gitlab_url)}
-    </div>
-  </section>
-
-  <section class="section section-canvas" id="failures">
-    <div class="wrap">
-      <div class="section-heading">
-        <p class="eyebrow">需要关注</p>
-        <h2>失败的现场，留在这里</h2>
-        <p class="section-caption">
-          最近 {len(data.failures)} 条失败任务；只展示原因，不在这里执行重试。
-        </p>
-      </div>
-      {_failure_list(data.failures, now=data.now, gitlab_url=data.gitlab_url)}
-    </div>
-  </section>
-
-  <section class="section section-parchment" id="projects">
-    <div class="wrap">
-      <div class="section-heading">
-        <p class="eyebrow">项目</p>
-        <h2>每个仓库的节奏</h2>
-        <p class="section-caption">
-          按最后活动时间排序，最多展示 50 个项目；这是单实例 SQLite 内的多项目视图。
-        </p>
-      </div>
-      <div class="utility-card table-card">
-        {_project_table(data.projects, gitlab_url=data.gitlab_url)}
-      </div>
-    </div>
-  </section>
-
-  <section class="section section-dark-2" id="ops">
-    <div class="wrap">
-      <div class="section-heading on-dark">
-        <p class="eyebrow">运维指标</p>
-        <h2>这一程，机器人都做了什么</h2>
-        <p class="section-caption">
-          进程启动以来累计，重启归零；长期趋势请抓取 Prometheus /metrics。
-        </p>
-      </div>
-      <div class="metrics-row">{_metric_cards(data.metrics)}</div>
-    </div>
-  </section>
-</main>
-
-<footer class="footer">
-  <div class="wrap footer-inner">
+<div class="shell">
+  {_topbar(data, health_class, health_title, active="overview")}
+  <header class="hero">
     <div>
-      <p class="footer-brand">mini-gitlab-bot</p>
-      <p class="footer-copy">只读观测台 · 当前实例 SQLite</p>
+      <p class="eyebrow">只读观测台 · 当前实例</p>
+      <h1>机器人今天怎么样</h1>
+      <p class="hero-lead">{html.escape(health_note)}</p>
+      <p class="hero-meta">
+        <span>最近刷新 {_fmt_datetime(data.now)} UTC</span>
+        <span>版本 v{html.escape(data.version)}</span>
+      </p>
     </div>
-    <p class="footer-legal">不提供重试 / 取消 / 手动触发 · 所有时间 UTC</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="/dashboard">刷新数据 <span aria-hidden="true">›</span></a>
+      <a class="btn btn-secondary" href="/settings">配置</a>
+    </div>
+  </header>
+
+  <div class="grid-main">
+    {_trend_card(data)}
+    {_failure_card(data)}
   </div>
-</footer>
+
+  <div class="grid-bottom">
+    {_stats_card(data)}
+    {_recent_card(data)}
+    {_projects_card(data)}
+  </div>
+
+  <section class="card section" id="ops">
+    <div class="card-head">
+      <div>
+        <p class="card-label">进程指标</p>
+        <h2 class="card-title">这一程，机器人都做了什么</h2>
+        <p class="card-sub">进程启动以来累计，重启归零；长期趋势请抓取 Prometheus /metrics。</p>
+      </div>
+    </div>
+    {_metrics(data.metrics)}
+  </section>
+
+  <footer class="foot">
+    <span><strong>mini-gitlab-bot</strong> · 只读观测台 · 当前实例 SQLite</span>
+    <span>不提供重试 / 取消 / 手动触发 · 所有时间 UTC</span>
+  </footer>
+</div>
 """
-    return _page("运维观测台 · mini-gitlab-bot", body)
+    return document("运维观测台 · mini-gitlab-bot", body)
+
+
+def render_dashboard_recent(data: DashboardData) -> str:
+    """最近任务独立页：导航栏“最近任务”的落点，展示最多 50 条。"""
+    health_class, health_title, health_note = _health(data)
+    body = f"""
+<div class="shell">
+  {_topbar(data, health_class, health_title, active="recent")}
+  <header class="hero">
+    <div>
+      <p class="eyebrow">只读观测台 · 任务流</p>
+      <h1>最近任务</h1>
+      <p class="hero-lead">按最后更新时间倒序，最多展示 50 条；点任意一条看失败现场与日志。</p>
+      <p class="hero-meta">
+        <span>最近刷新 {_fmt_datetime(data.now)} UTC</span>
+        <span>{len(data.recent)} 条记录</span>
+      </p>
+    </div>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="/dashboard/recent">刷新数据 <span aria-hidden="true">›</span></a>
+      <a class="btn btn-secondary" href="/dashboard">返回总览</a>
+    </div>
+  </header>
+
+  <section class="card section">
+    <div class="card-head">
+      <div>
+        <p class="card-label">Task stream</p>
+        <h2 class="card-title">队列里正在发生什么</h2>
+        <p class="card-sub">{html.escape(health_note)}</p>
+      </div>
+      <span class="pill pill-muted">只读</span>
+    </div>
+    <div class="list">{_recent_rows(data.recent, data.now, 50)}</div>
+  </section>
+
+  <footer class="foot">
+    <span><strong>mini-gitlab-bot</strong> · 最近任务 · 当前实例 SQLite</span>
+    <span>只读，不在这里重试 / 取消 · 所有时间 UTC</span>
+  </footer>
+</div>
+"""
+    return document("最近任务 · mini-gitlab-bot", body)
+
+
+def render_dashboard_projects(data: DashboardData) -> str:
+    """项目独立页：导航栏“项目”的落点，展示按最后活动排序的 50 个项目。"""
+    health_class, health_title, health_note = _health(data)
+    body = f"""
+<div class="shell">
+  {_topbar(data, health_class, health_title, active="projects")}
+  <header class="hero">
+    <div>
+      <p class="eyebrow">只读观测台 · 项目</p>
+      <h1>项目节奏</h1>
+      <p class="hero-lead">这是本实例见过的项目，按最近活动倒序；每行只汇总任务结果，不读 GitLab 实时状态。</p>
+      <p class="hero-meta">
+        <span>{len(data.projects)} 个项目</span>
+        <span>最近刷新 {_fmt_datetime(data.now)} UTC</span>
+      </p>
+    </div>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="/dashboard/projects">刷新数据 <span aria-hidden="true">›</span></a>
+      <a class="btn btn-secondary" href="/dashboard">返回总览</a>
+    </div>
+  </header>
+
+  <section class="card section">
+    <div class="card-head">
+      <div>
+        <p class="card-label">Repositories</p>
+        <h2 class="card-title">每个仓库的节奏</h2>
+        <p class="card-sub">{html.escape(health_note)}</p>
+      </div>
+      <span class="pill pill-muted">{len(data.projects)} 个</span>
+    </div>
+    <div class="list">{_project_rows(data.projects, data.gitlab_url, data.now, 50)}</div>
+  </section>
+
+  <footer class="foot">
+    <span><strong>mini-gitlab-bot</strong> · 项目 · 当前实例 SQLite</span>
+    <span>只读汇总 · 项目链接指向 GitLab · 所有时间 UTC</span>
+  </footer>
+</div>
+"""
+    return document("项目 · mini-gitlab-bot", body)
 
 
 def render_dashboard_task(
@@ -186,1011 +232,387 @@ def render_dashboard_task(
     now: datetime,
     gitlab_url: str,
 ) -> str:
-    """任务详情：状态、失败现场、事件时间线与日志尾部。"""
+    """任务详情：任务档案、失败现场、事件时间线与日志尾部。"""
     issue_url = _issue_url(gitlab_url, task.project.path, task.issue_iid)
     project_url = _project_url(gitlab_url, task.project.path)
     kind = KIND_LABELS.get(task.kind, str(task.kind))
-
-    def row(name: str, value: str) -> str:
-        return f"<tr><th>{html.escape(name)}</th><td>{value}</td></tr>"
-
+    state = STATE_LABELS.get(task.state, str(task.state))
+    pill = STATE_PILLS.get(task.state, "pill-muted")
     links = []
     if task.mr_url and task.mr_iid:
-        links.append(
-            f'<a class="text-link" href="{html.escape(task.mr_url)}">MR !{task.mr_iid}</a>'
-        )
+        links.append(f'<a class="muted" href="{html.escape(task.mr_url)}">MR !{task.mr_iid}</a>')
     if task.branch:
         links.append(f'<span class="mono">{html.escape(task.branch)}</span>')
     if task.commit_sha:
-        links.append(f"<code>{html.escape(task.commit_sha[:12])}</code>")
-    detail = "".join(
+        links.append(f'<span class="mono">{html.escape(task.commit_sha[:12])}</span>')
+
+    def item(name: str, value: str) -> str:
+        return f'<div class="detail-item"><div class="k">{html.escape(name)}</div><div class="v">{value}</div></div>'
+
+    fields = "".join(
         [
-            row("任务", f'<span class="mono">{html.escape(task.id)}</span>'),
-            row(
+            item("任务", f'<span class="mono">{html.escape(task.id)}</span>'),
+            item(
                 "项目",
-                f'<a class="text-link" href="{html.escape(project_url)}">'
-                f"{html.escape(task.project.path)}</a>",
+                f'<a href="{html.escape(project_url)}">{html.escape(task.project.path)}</a>',
             ),
-            row(
-                "issue",
-                f'<a class="text-link" href="{html.escape(issue_url)}">#{task.issue_iid}</a>',
-            ),
-            row("类型", html.escape(kind)),
-            row("状态", _badge(task)),
-            row(
+            item("issue", f'<a href="{html.escape(issue_url)}">#{task.issue_iid}</a>'),
+            item("类型", html.escape(kind)),
+            item("状态", _state_pill(task.state)),
+            item(
                 "触发",
-                f"{html.escape(str(task.trigger_kind))} by @{html.escape(task.trigger_actor)}",
+                f"{html.escape(str(task.trigger_kind))} · @{html.escape(task.trigger_actor)}",
             ),
-            row("尝试", f"{task.attempts}/{task.max_attempts}"),
-            row("创建", f"{_fmt_time(task.created_at)} UTC"),
-            row("结束", f"{_fmt_time(task.finished_at)} UTC" if task.finished_at else "—"),
-            row("耗时", _fmt_duration(task.elapsed_sec(now))),
-            row("产物", " ".join(links) or "—"),
-            row("失败阶段", html.escape(task.failure_stage or "—")),
-            row("失败原因", html.escape(task.failure_reason or "—")),
+            item("尝试", f"{task.attempts} / {task.max_attempts}"),
+            item("创建", f"{_fmt_datetime(task.created_at)} UTC"),
+            item("结束", f"{_fmt_datetime(task.finished_at)} UTC" if task.finished_at else "—"),
+            item("耗时", _fmt_duration(task.elapsed_sec(now))),
+            item("产物", " ".join(links) or "—"),
+            item("失败阶段", html.escape(task.failure_stage or "—")),
         ]
     )
     evidence = (
         f"""
-  <section class="section section-canvas">
-    <div class="wrap">
-      <div class="section-heading"><p class="eyebrow">失败证据</p><h2>现场</h2></div>
-      <div class="utility-card">
-        <pre class="code-block">{html.escape(task.failure_evidence or "—")}</pre>
-      </div>
-    </div>
+  <section class="card section">
+    <p class="card-label">失败证据</p>
+    <h2 class="card-title">现场</h2>
+    <pre class="code">{html.escape(task.failure_evidence or "—")}</pre>
   </section>"""
         if task.failure_evidence
         else ""
     )
     tail = (
         f"""
-  <section class="section section-dark">
-    <div class="wrap">
-      <div class="section-heading on-dark">
-        <p class="eyebrow">日志尾部</p>
-        <h2>最后 {log_lines} 行</h2>
-        <p class="section-caption">路径来自数据库；读取失败时这里不会显示内容。</p>
-      </div>
-      <pre class="code-block code-block-dark">{html.escape(log_tail)}</pre>
-    </div>
+  <section class="card section">
+    <p class="card-label">日志尾部</p>
+    <h2 class="card-title">最后 {log_lines} 行</h2>
+    <pre class="code">{html.escape(log_tail)}</pre>
   </section>"""
         if log_tail
-        else """
-  <section class="section section-canvas">
-    <div class="wrap"><div class="empty">没有可读的日志文件。</div></div>
-  </section>"""
+        else ""
+    )
+    timeline = (
+        "".join(
+            f"""<li>
+          <div class="when">{_fmt_datetime(event.at)} UTC</div>
+          <div class="what">{html.escape(event.kind)}</div>
+          <div class="detail">{html.escape(_event_detail(event.detail))}</div>
+        </li>"""
+            for event in events
+        )
+        or '<p class="empty-soft">还没有事件记录。</p>'
     )
     body = f"""
-{_global_nav()}
-<div class="sub-nav">
-  <div class="sub-inner">
-    <div class="sub-crumb">
-      <span>任务</span><span>/</span><strong>{html.escape(task.short_id)}</strong>
+<div class="shell">
+  {_topbar(None, "warn", state, active="recent")}
+  <header class="hero">
+    <div>
+      <p class="eyebrow">任务档案</p>
+      <h1>任务 {html.escape(task.short_id)}</h1>
+      <p class="hero-lead">{html.escape(task.project.path)} · issue #{task.issue_iid} · {html.escape(kind)}</p>
     </div>
-    <div class="sub-actions">
-      <a class="button-secondary button-small" href="/dashboard">返回 Dashboard</a>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="/dashboard/recent">返回最近任务</a>
     </div>
-  </div>
-</div>
+  </header>
 
-<main>
-  <section class="hero hero-detail">
-    <div class="wrap hero-inner hero-inner-left">
-      <p class="hero-kicker">
-        {html.escape(kind)} · {html.escape(task.project.path)} · #{task.issue_iid}
-      </p>
-      <h1>任务 <span class="mono">{html.escape(task.short_id)}</span></h1>
-      <p class="hero-lead">
-        {html.escape(stage_label(task.state, task.kind))}。
-        {html.escape(task.failure_reason or "任务状态已持久化；本页为只读快照。")}
-      </p>
-      <div class="hero-actions"><a class="button-primary" href="/dashboard">返回 Dashboard</a></div>
-    </div>
-  </section>
-
-  <section class="section section-parchment">
-    <div class="wrap">
-      <div class="section-heading"><p class="eyebrow">基本信息</p><h2>任务档案</h2></div>
-      <div class="utility-card table-card"><table class="info-table">{detail}</table></div>
-    </div>
-  </section>
-
-  {evidence}
-
-  <section class="section section-canvas">
-    <div class="wrap">
-      <div class="section-heading">
-        <p class="eyebrow">事件时间线</p>
-        <h2>从入队到收尾</h2>
-        <p class="section-caption">{len(events)} 条事件，按发生顺序排列。</p>
+  <div class="grid-main">
+    <section class="card card-large">
+      <div class="card-head">
+        <div>
+          <p class="card-label">状态</p>
+          <h2 class="card-title">{html.escape(state)}</h2>
+          <p class="card-sub">{html.escape(task.failure_reason or "任务正在按状态机推进。")}</p>
+        </div>
+        <span class="pill {pill}">{html.escape(state)}</span>
       </div>
-      <div class="utility-card">{_timeline(events)}</div>
-    </div>
-  </section>
-
+      <div class="detail-grid">{fields}</div>
+    </section>
+    <section class="card">
+      <p class="card-label">最近事件</p>
+      <h2 class="card-title">事件时间线</h2>
+      <ul class="timeline">{timeline}</ul>
+    </section>
+  </div>
+  {evidence}
   {tail}
-</main>
-
-<footer class="footer">
-  <div class="wrap footer-inner">
-    <div><p class="footer-brand">mini-gitlab-bot</p><p class="footer-copy">任务详情 · 只读</p></div>
-    <p class="footer-legal">所有时间 UTC · 不提供重试 / 取消 / 手动触发</p>
-  </div>
-</footer>
-"""
-    return _page(f"任务 {task.short_id} · mini-gitlab-bot", body)
-
-
-# --------------------------------------------------------------------------- #
-# 导航与片段
-# --------------------------------------------------------------------------- #
-
-
-def _global_nav(version: str = "") -> str:
-    v = f'<span class="nav-version">v{_e(version)}</span>' if version else ""
-    return f"""
-<nav class="global-nav">
-  <div class="nav-inner">
-    <a class="nav-brand" href="/dashboard"><span class="brand-glyph">◈</span> mini-gitlab-bot</a>
-    <div class="nav-links">
-      <a href="#overview">概况</a>
-      <a href="#recent">任务</a>
-      <a href="#failures">失败</a>
-      <a href="#projects">项目</a>
-      <a href="#ops">指标</a>
-    </div>
-    <div class="nav-meta"><span>只读模式</span>{v}</div>
-  </div>
-</nav>
-"""
-
-
-def _sub_nav() -> str:
-    return """
-<div class="sub-nav">
-  <div class="sub-inner">
-    <div class="sub-crumb"><span>运维</span><span>/</span><strong>Dashboard</strong></div>
-    <div class="sub-actions">
-      <span class="sub-note">手动刷新</span>
-      <a class="button-primary button-small" href="/dashboard">刷新数据</a>
-    </div>
-  </div>
+  <footer class="foot">
+    <span><strong>mini-gitlab-bot</strong> · 只读任务档案</span>
+    <span>所有时间 UTC · 只读，不可在此重试</span>
+  </footer>
 </div>
 """
+    return document(f"任务 {task.short_id} · mini-gitlab-bot", body)
+
+
+def _topbar(
+    data: DashboardData | None, health_class: str, health_title: str, *, active: str = "overview"
+) -> str:
+    username = data.username if data else "operator"
+    initial = (username[:1] or "M").upper()
+
+    def item(label: str, href: str, key: str) -> str:
+        cls = ' class="active"' if active == key else ""
+        return f'<a{cls} href="{href}">{label}</a>'
+
+    return f"""<div class="topbar">
+  {brand()}
+  <nav class="nav" aria-label="主导航">
+    {item("总览", "/dashboard", "overview")}
+    {item("最近任务", "/dashboard/recent", "recent")}
+    {item("项目", "/dashboard/projects", "projects")}
+    {item("配置", "/settings", "settings")}
+  </nav>
+  <div class="top-actions">
+    <span class="health"><span class="dot {health_class}"></span>{html.escape(health_title)}</span>
+    <span class="avatar" title="{html.escape(username)}">{html.escape(initial)}</span>
+    <form method="post" action="/logout">
+      <button class="btn btn-quiet btn-small" type="submit">退出</button>
+    </form>
+  </div>
+</div>"""
+
+
+def _trend_card(data: DashboardData) -> str:
+    days = _trend_days(data.daily, data.now)
+    max_total = max([point[1].total for point in days] + [1])
+    today = days[-1][1].total if days else 0
+    bars = []
+    dates = []
+    for index, (day, count) in enumerate(days):
+        current = index == len(days) - 1
+        height = max(6, round(100 * count.total / max_total))
+        bars.append(
+            f"""<div class="trend-col{" current" if current else ""}">
+              {f'<span class="trend-float">{count.total}</span>' if current else ""}
+              <span class="trend-bar" style="height:{height}%"></span>
+            </div>"""
+        )
+        dates.append(
+            f'<span class="trend-date{" current" if current else ""}">{day.strftime("%m/%d")}</span>'
+        )
+    rate = 0
+    if data.stats.created_since:
+        rate = round(100 * data.stats.succeeded_since / data.stats.created_since)
+    bar_html = "".join(bars)
+    date_html = "".join(dates)
+    return f"""<section class="card card-large">
+  <div class="card-head">
+    <div>
+      <p class="card-label">7 日任务趋势</p>
+      <h2 class="card-title">这周跑了多少活</h2>
+      <p class="card-sub">按创建时间统计 UTC 自然日；只读快照，刷新页面重新读取。</p>
+    </div>
+    <span class="pill pill-muted">近 7 天</span>
+  </div>
+  <p class="big-number"><span class="focus-number">{today}</span><span class="unit">今日任务</span></p>
+  <div class="trend">
+    <div class="trend-bars">{bar_html}</div>
+    <div class="trend-dates">{date_html}</div>
+    <div class="trend-foot">
+      <div>
+        <p class="big-number" style="font-size:28px;margin:0">{rate}%<span class="unit">24h 成功率</span></p>
+        <p class="trend-note">成功率 = 24h 内成功任务 / 24h 内新建任务。<br>不是完成率，失败与在飞任务都计入分母。</p>
+      </div>
+      <span class="pill pill-blue">近 24h {data.stats.created_since} 个</span>
+    </div>
+  </div>
+</section>"""
+
+
+def _failure_card(data: DashboardData) -> str:
+    if not data.failures:
+        content = '<div class="empty">暂无失败任务。队列是干净的。</div>'
+    else:
+        rows = "".join(
+            f"""<a class="list-row row-link" href="/dashboard/task/{html.escape(task.id)}">
+              <span class="icon-block icon-soft">{html.escape(_kind_mark(task.kind))}</span>
+              <span class="row-main">
+                <span class="row-title">{html.escape(task.project.path)} <span class="pill pill-failed">失败</span></span>
+                <span class="row-sub">{html.escape(_clip(task.failure_reason or task.failure_stage or "未记录失败原因", 72))}</span>
+              </span>
+              <span class="row-end">{html.escape(_fmt_ago(task.updated_at, data.now))}</span>
+            </a>"""
+            for task in data.failures
+        )
+        content = f'<div class="alert-list">{rows}</div>'
+    return f"""<section class="card" id="failures">
+  <div class="card-head">
+    <div>
+      <p class="card-label">需要关注</p>
+      <h2 class="card-title">失败的现场，留在这里</h2>
+      <p class="card-sub">最近 {len(data.failures)} 条失败任务；只展示原因，不在这里执行重试。</p>
+    </div>
+    <span class="pill pill-failed">{len(data.failures)} 条</span>
+  </div>
+  {content}
+</section>"""
+
+
+def _stats_card(data: DashboardData) -> str:
+    stats = data.stats
+    return f"""<section class="card">
+  <p class="card-label">运行概况</p>
+  <h2 class="card-title">队列与结果</h2>
+  <div class="stat-strip">
+    <div class="stat"><div class="stat-label">执行中</div><div class="stat-value">{stats.active}</div><div class="stat-lines"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+    <div class="stat"><div class="stat-label">排队</div><div class="stat-value">{stats.queued}</div><div class="stat-lines"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+    <div class="stat"><div class="stat-label">24h 失败</div><div class="stat-value">{stats.failed_since}</div><div class="stat-lines"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+  </div>
+  <p class="card-sub" style="margin-top:16px">历史累计 {stats.total} 个任务 · 成功 {stats.succeeded} · 失败 {stats.failed}</p>
+</section>"""
+
+
+def _recent_rows(tasks: Sequence[Task], now: datetime, limit: int) -> str:
+    if not tasks:
+        return '<p class="empty">还没有任务。</p>'
+    return "".join(
+        f"""<a class="list-row row-link" href="/dashboard/task/{html.escape(task.id)}">
+          <span class="icon-block icon-slate">{html.escape(_kind_mark(task.kind))}</span>
+          <span class="row-main">
+            <span class="row-title">{html.escape(task.project.path)} <span class="pill {STATE_PILLS.get(task.state, "pill-muted")}">{html.escape(STATE_LABELS.get(task.state, str(task.state)))}</span></span>
+            <span class="row-sub">#{task.issue_iid} · {html.escape(KIND_LABELS.get(task.kind, str(task.kind)))} · {html.escape(task.short_id)}</span>
+          </span>
+          <span class="row-end">{html.escape(_fmt_ago(task.updated_at, now))}</span>
+        </a>"""
+        for task in tasks[:limit]
+    )
+
+
+def _recent_card(data: DashboardData) -> str:
+    return f"""<section class="card" id="recent">
+  <div class="card-head">
+    <div><p class="card-label">最近任务</p><h2 class="card-title">队列里正在发生什么</h2></div>
+    <a class="pill pill-muted" href="/dashboard/recent">查看全部</a>
+  </div>
+  <div class="list">{_recent_rows(data.recent, data.now, 8)}</div>
+</section>"""
+
+
+def _project_rows(
+    projects: Sequence[ProjectSummary], gitlab_url: str, now: datetime, limit: int
+) -> str:
+    if not projects:
+        return '<p class="empty">还没有项目数据。</p>'
+    return "".join(
+        f"""<a class="list-row row-link" href="{html.escape(_project_url(gitlab_url, project.project.path))}">
+          <span class="icon-block {"icon-blue" if index % 2 else "icon-slate"}">{html.escape(project.project.path[:1].upper())}</span>
+          <span class="row-main">
+            <span class="row-title">{html.escape(project.project.path)}</span>
+            <span class="row-sub">{project.total} 个任务 · 成功 {project.succeeded} · 失败 {project.failed}</span>
+          </span>
+          <span class="row-end">{project.active} 在飞<br>{html.escape(_fmt_ago(project.last_activity, now))}</span>
+        </a>"""
+        for index, project in enumerate(projects[:limit])
+    )
+
+
+def _projects_card(data: DashboardData) -> str:
+    return f"""<section class="card" id="projects">
+  <div class="card-head">
+    <div><p class="card-label">项目</p><h2 class="card-title">每个仓库的节奏</h2></div>
+    <a class="pill pill-muted" href="/dashboard/projects">全部 {len(data.projects)} 个</a>
+  </div>
+  <div class="list">{_project_rows(data.projects, data.gitlab_url, data.now, 6)}</div>
+</section>"""
+
+
+def _metrics(metrics: Mapping[str, float]) -> str:
+    items = "".join(
+        f"""<div class="stat"><div class="stat-label">{label}</div><div class="stat-value">{_fmt_number(metrics.get(name, 0))}</div></div>"""
+        for name, label in METRICS
+    )
+    return f'<div class="stat-strip" style="flex-wrap:wrap;gap:16px 0">{items}</div>'
 
 
 def _health(data: DashboardData) -> tuple[str, str, str]:
-    stats = data.stats
     if not data.worker_enabled:
-        return "bad", "Worker 未启用", "任务会留在队列里，需要启用 WORKER_ENABLED 才能执行。"
+        return "bad", "Worker 未启用", "Worker 未启用，新任务只会留在队列里。"
     if data.stalled:
         return "bad", "有任务租约过期", "存在超过阈值未续租的任务，请检查 worker 与日志。"
-    if stats.failed_since:
-        return "warn", "有失败需要关注", f"过去 24h 有 {stats.failed_since} 个任务失败。"
-    if stats.queued:
-        return "warn", "队列有积压", f"当前有 {stats.queued} 个任务等待 worker。"
-    if stats.active:
-        return "ok", "正在处理", f"当前有 {stats.active} 个任务在流水线中。"
-    return "ok", "运行正常", "队列为空，没有需要处理的积压。"
+    if data.stats.failed_since:
+        return "warn", "有失败需要关注", f"过去 24h 有 {data.stats.failed_since} 个任务失败。"
+    return "ok", "运行正常", "队列、worker 与最近任务都没有异常信号。"
 
 
-def _kpi_cards(stats: DashboardStats) -> str:
-    items = (
-        ("总任务", stats.total, "全部历史"),
-        ("排队", stats.queued, "等待 worker"),
-        ("执行中", stats.active - stats.queued, "preparing → opening_mr"),
-        ("已完成", stats.succeeded, "succeeded"),
-        ("失败", stats.failed, "failed"),
-        (
-            "24h 新增",
-            stats.created_since,
-            f"成功 {stats.succeeded_since} / 失败 {stats.failed_since}",
-        ),
-    )
-    return "".join(
-        f'<article class="utility-card kpi-card">'
-        f'<p class="kpi-label">{html.escape(label)}</p>'
-        f'<p class="kpi-value">{value}</p>'
-        f'<p class="kpi-note">{html.escape(note)}</p></article>'
-        for label, value, note in items
-    )
-
-
-def _recent_tasks(tasks: Sequence[Task], *, now: datetime, gitlab_url: str) -> str:
-    if not tasks:
-        return (
-            '<div class="empty empty-dark">还没有任务。webhook 或周期扫描入队后会显示在这里。</div>'
+def _trend_days(
+    daily: Sequence[DailyCount], now: datetime, *, days: int = 7
+) -> list[tuple[datetime, DailyCount]]:
+    today = now.astimezone(UTC).date()
+    by_day = {point.day: point for point in daily}
+    result: list[tuple[datetime, DailyCount]] = []
+    for offset in range(days - 1, -1, -1):
+        day = today - timedelta(days=offset)
+        key = day.isoformat()
+        result.append(
+            (
+                datetime.combine(day, datetime.min.time(), UTC),
+                by_day.get(key, DailyCount(key, 0, 0)),
+            )
         )
-    rows = []
-    for task in tasks:
-        issue_url = _issue_url(gitlab_url, task.project.path, task.issue_iid)
-        kind = html.escape(KIND_LABELS.get(task.kind, str(task.kind)))
-        rows.append(
-            "<tr>"
-            f'<td class="num">{_fmt_time(task.created_at)}</td>'
-            f'<td><a class="text-link mono" href="/dashboard/task/{html.escape(task.id)}">'
-            f"{html.escape(task.short_id)}</a></td>"
-            f'<td><span class="kind">{kind}</span></td>'
-            f'<td><a class="text-link" href="{html.escape(issue_url)}">'
-            f"{html.escape(task.project.path)}</a>"
-            f'<span class="muted"> #{task.issue_iid}</span></td>'
-            f"<td>{_badge(task)}</td>"
-            f'<td class="num">{html.escape(_fmt_duration(task.elapsed_sec(now)))}</td>'
-            f'<td class="reason">{html.escape(_clip(task.failure_reason) or "—")}</td>'
-            "</tr>"
-        )
-    return (
-        '<div class="table-scroll"><table class="dark-table"><thead><tr>'
-        "<th>创建 (UTC)</th><th>任务</th><th>类型</th><th>项目 / issue</th>"
-        "<th>状态</th><th>耗时</th><th>失败原因</th>"
-        f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
-    )
+    return result
 
 
-def _failure_list(tasks: Sequence[Task], *, now: datetime, gitlab_url: str) -> str:
-    if not tasks:
-        return '<div class="empty">✓ 暂无失败任务</div>'
-    cards = []
-    for task in tasks:
-        issue_url = _issue_url(gitlab_url, task.project.path, task.issue_iid)
-        cards.append(
-            f"""
-<article class="utility-card failure-card">
-  <div class="failure-top">
-    <span class="flag">失败</span>
-    <span class="caption">
-      {html.escape(task.failure_stage or "unknown")} · {_fmt_time(task.updated_at)} UTC
-    </span>
-  </div>
-  <a class="failure-title mono" href="/dashboard/task/{html.escape(task.id)}">
-    {html.escape(task.short_id)}
-  </a>
-  <p class="failure-project">
-    {html.escape(task.project.path)}
-    <a class="text-link" href="{html.escape(issue_url)}">#{task.issue_iid}</a>
-  </p>
-  <p class="failure-reason">{html.escape(_clip(task.failure_reason, 160) or "—")}</p>
-  <p class="failure-foot">
-    {html.escape(KIND_LABELS.get(task.kind, str(task.kind)))} · 耗时
-    {html.escape(_fmt_duration(task.elapsed_sec(now)))}
-  </p>
-</article>"""
-        )
-    return f'<div class="failure-grid">{"".join(cards)}</div>'
+def _kind_mark(kind: TaskKind) -> str:
+    return {
+        TaskKind.FIX: "修",
+        TaskKind.TRIAGE: "巡",
+        TaskKind.EXPLAIN: "释",
+        TaskKind.RELEASE: "R",
+    }.get(kind, "?")
 
 
-def _project_table(projects: Sequence[ProjectSummary], *, gitlab_url: str) -> str:
-    if not projects:
-        return '<div class="empty">还没有项目数据。任务入队后按项目聚合。</div>'
-    rows = []
-    for item in projects:
-        project_url = _project_url(gitlab_url, item.project.path)
-        rows.append(
-            "<tr>"
-            f'<td><a class="text-link" href="{html.escape(project_url)}">'
-            f"{html.escape(item.project.path)}</a></td>"
-            f'<td class="num">{item.total}</td>'
-            f'<td class="num">{item.active}</td>'
-            f'<td class="num">{item.succeeded}</td>'
-            f'<td class="num">{item.failed}</td>'
-            f'<td class="num">{_fmt_time(item.last_activity)}</td>'
-            "</tr>"
-        )
-    return (
-        '<div class="table-scroll"><table class="light-table"><thead><tr>'
-        "<th>项目</th><th>总任务</th><th>进行中</th><th>成功</th><th>失败</th>"
-        f"<th>最后活动 (UTC)</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
-    )
+def _state_pill(state: TaskState) -> str:
+    return f'<span class="pill {STATE_PILLS.get(state, "pill-muted")}">{html.escape(STATE_LABELS.get(state, str(state)))}</span>'
 
 
-def _metric_cards(metrics: Mapping[str, float]) -> str:
-    cards = []
-    for name, label in METRICS:
-        value = metrics.get(name, 0.0)
-        cards.append(
-            f'<div class="metric"><p class="metric-label">{html.escape(label)}</p>'
-            f'<p class="metric-value">{_fmt_number(value)}</p></div>'
-        )
-    return "".join(cards)
+def _event_detail(detail: Mapping[str, object]) -> str:
+    text = json.dumps(detail, ensure_ascii=False, sort_keys=True)
+    return text if len(text) <= 140 else text[:137] + "…"
 
 
-def _timeline(events: Sequence[TaskEvent]) -> str:
-    if not events:
-        return '<div class="empty">没有事件记录。</div>'
-    items = []
-    for event in events:
-        detail = json.dumps(event.detail, ensure_ascii=False, default=str, sort_keys=True)
-        items.append(
-            f'<li><span class="time">{_fmt_time(event.at)} UTC</span>'
-            f'<span class="event-kind">{html.escape(event.kind)}</span>'
-            f'<span class="event-detail">{html.escape(_clip(detail, 300))}</span></li>'
-        )
-    return f'<ul class="timeline">{"".join(items)}</ul>'
+def _fmt_datetime(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
-# --------------------------------------------------------------------------- #
-# 格式化
-# --------------------------------------------------------------------------- #
-
-
-def _badge(task: Task) -> str:
-    return (
-        f'<span class="badge {_state_class(task.state)}">'
-        f"{html.escape(stage_label(task.state, task.kind))}</span>"
-    )
-
-
-def _state_class(state: TaskState) -> str:
-    return STATE_CLASSES.get(state, "active")
-
-
-def _fmt_time(value: datetime | None) -> str:
-    return value.astimezone(UTC).strftime("%m-%d %H:%M:%S") if value else "—"
+def _fmt_ago(value: datetime, now: datetime) -> str:
+    seconds = max(0, int((now - value).total_seconds()))
+    if seconds < 60:
+        return "刚刚"
+    if seconds < 3600:
+        return f"{seconds // 60} 分钟前"
+    if seconds < 86400:
+        return f"{seconds // 3600} 小时前"
+    return f"{seconds // 86400} 天前"
 
 
 def _fmt_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
     if seconds < 60:
-        return f"{seconds:.0f}s"
-    minutes, rest = divmod(int(seconds), 60)
+        return f"{seconds}s"
+    minutes, rest = divmod(seconds, 60)
     if minutes < 60:
-        return f"{minutes}m{rest:02d}s"
+        return f"{minutes}m {rest}s"
     hours, minutes = divmod(minutes, 60)
-    return f"{hours}h{minutes:02d}m"
+    return f"{hours}h {minutes}m"
 
 
 def _fmt_number(value: float) -> str:
-    return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+    return f"{value:,.0f}" if abs(value) >= 1 else f"{value:g}"
 
 
 def _clip(text: str | None, limit: int = 90) -> str:
     if not text:
         return ""
-    text = " ".join(text.split())
-    return text if len(text) <= limit else f"{text[:limit]}…"
-
-
-def _e(value: object) -> str:
-    return html.escape(str(value))
+    one_line = " ".join(text.split())
+    return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
 
 
 def _project_url(gitlab_url: str, path: str) -> str:
-    base = gitlab_url.rstrip("/")
-    return f"{base}/{quote(path, safe='/')}"
+    return f"{gitlab_url.rstrip('/')}/{quote(path, safe='/')}"
 
 
 def _issue_url(gitlab_url: str, path: str, iid: int) -> str:
     return f"{_project_url(gitlab_url, path)}/-/issues/{iid}"
-
-
-# --------------------------------------------------------------------------- #
-# 页面骨架
-# --------------------------------------------------------------------------- #
-
-_CSS = """
-/* DESIGN.md token map: colors / typography / rounded / spacing */
-:root {
-  --color-primary: #0066cc;
-  --color-primary-focus: #0071e3;
-  --color-primary-on-dark: #2997ff;
-  --color-ink: #1d1d1f;
-  --color-body: #1d1d1f;
-  --color-body-on-dark: #ffffff;
-  --color-body-muted: #cccccc;
-  --color-ink-muted-80: #333333;
-  --color-ink-muted-48: #7a7a7a;
-  --color-divider-soft: #f0f0f0;
-  --color-hairline: #e0e0e0;
-  --color-canvas: #ffffff;
-  --color-parchment: #f5f5f7;
-  --color-pearl: #fafafc;
-  --color-tile-1: #272729;
-  --color-tile-2: #2a2a2c;
-  --color-tile-3: #252527;
-  --color-black: #000000;
-  --color-on-primary: #ffffff;
-  --font-display: "SF Pro Display", system-ui, -apple-system, BlinkMacSystemFont,
-    "Inter", sans-serif;
-  --font-text: "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont,
-    "Inter", sans-serif;
-  --rounded-sm: 8px;
-  --rounded-lg: 18px;
-  --rounded-pill: 9999px;
-  --space-xxs: 4px;
-  --space-xs: 8px;
-  --space-sm: 12px;
-  --space-md: 17px;
-  --space-lg: 24px;
-  --space-xl: 32px;
-  --space-xxl: 48px;
-  --space-section: 80px;
-  --content-max: 1440px;
-}
-
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body {
-  margin: 0;
-  background: var(--color-parchment);
-  color: var(--color-ink);
-  font-family: var(--font-text);
-  font-size: 17px;
-  font-weight: 400;
-  line-height: 1.47;
-  letter-spacing: -0.374px;
-  -webkit-font-smoothing: antialiased;
-}
-h1, h2, p { margin: 0; }
-a { color: var(--color-primary); text-decoration: none; }
-a:focus-visible, button:focus-visible, .button-primary:focus-visible,
-.button-secondary:focus-visible {
-  outline: 2px solid var(--color-primary-focus);
-  outline-offset: 2px;
-}
-.wrap {
-  width: min(var(--content-max), 100%);
-  margin: 0 auto;
-  padding: 0 var(--space-xxl);
-}
-
-/* global-nav: DESIGN.md component.global-nav */
-.global-nav {
-  height: 44px;
-  background: var(--color-black);
-  color: var(--color-body-on-dark);
-  font-family: var(--font-text);
-  font-size: 12px;
-  font-weight: 400;
-  letter-spacing: -0.12px;
-}
-.nav-inner {
-  width: min(var(--content-max), 100%);
-  height: 44px;
-  margin: 0 auto;
-  padding: 0 var(--space-xxl);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-lg);
-}
-.nav-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  color: var(--color-body-on-dark);
-  font-size: 21px;
-  font-weight: 600;
-  line-height: 1.19;
-  letter-spacing: 0.231px;
-  white-space: nowrap;
-}
-.brand-glyph { color: var(--color-body-on-dark); font-size: 18px; }
-.nav-links { display: flex; align-items: center; gap: 20px; }
-.nav-links a { color: var(--color-body-on-dark); opacity: .78; font-size: 12px; }
-.nav-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  color: var(--color-body-muted);
-  white-space: nowrap;
-}
-.nav-version { color: var(--color-body-muted); font-size: 12px; }
-
-/* sub-nav-frosted: parchment 80% + backdrop blur */
-.sub-nav {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  height: 52px;
-  background: rgba(245, 245, 247, .8);
-  border-bottom: 1px solid rgba(0, 0, 0, .08);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-}
-.sub-inner {
-  width: min(var(--content-max), 100%);
-  height: 52px;
-  margin: 0 auto;
-  padding: 0 var(--space-xxl);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-lg);
-}
-.sub-crumb {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-xs);
-  color: var(--color-ink-muted-80);
-  font-family: var(--font-text);
-  font-size: 21px;
-  font-weight: 600;
-  line-height: 1.19;
-  letter-spacing: 0.231px;
-}
-.sub-crumb span { color: var(--color-ink-muted-48); }
-.sub-actions { display: flex; align-items: center; gap: var(--space-sm); }
-.sub-note { color: var(--color-ink-muted-48); font-size: 12px; }
-
-/* buttons: full-pill primary / ghost secondary; active scale only */
-.button-primary,
-.button-secondary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 44px;
-  padding: 11px 22px;
-  border-radius: var(--rounded-pill);
-  font-family: var(--font-text);
-  font-size: 17px;
-  font-weight: 400;
-  line-height: 1.47;
-  letter-spacing: -0.374px;
-  white-space: nowrap;
-  transition: transform .15s ease;
-}
-.button-primary { background: var(--color-primary); color: var(--color-on-primary); }
-.button-secondary {
-  background: transparent;
-  color: var(--color-primary);
-  border: 1px solid var(--color-primary);
-}
-.button-primary:active, .button-secondary:active { transform: scale(.95); }
-.button-small {
-  min-height: 44px;
-  padding: 10px 18px;
-  font-size: 14px;
-  line-height: 1.29;
-  letter-spacing: -0.224px;
-}
-
-/* hero: light full-bleed, centered product-tile rhythm */
-.hero {
-  padding: var(--space-section) 0;
-  background: var(--color-canvas);
-  text-align: center;
-}
-.hero-inner { max-width: 980px; }
-.hero-inner-left { text-align: left; }
-.hero-kicker {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  margin-bottom: var(--space-md);
-  color: var(--color-ink-muted-48);
-  font-size: 14px;
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-}
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-ink);
-  flex: none;
-}
-.status-dot.warn { background: var(--color-ink-muted-48); }
-.status-dot.bad { background: var(--color-black); }
-.hero h1 {
-  font-family: var(--font-display);
-  font-size: 56px;
-  font-weight: 600;
-  line-height: 1.07;
-  letter-spacing: -0.28px;
-}
-.hero-lead {
-  max-width: 720px;
-  margin: var(--space-md) auto var(--space-xl);
-  color: var(--color-body);
-  font-family: var(--font-text);
-  font-size: 24px;
-  font-weight: 300;
-  line-height: 1.5;
-  letter-spacing: 0;
-}
-.hero-actions { display: flex; justify-content: center; gap: var(--space-sm); flex-wrap: wrap; }
-.hero-detail .hero-actions { justify-content: flex-start; }
-.hero-meta {
-  display: flex;
-  justify-content: center;
-  gap: var(--space-lg);
-  flex-wrap: wrap;
-  margin-top: var(--space-xl);
-  color: var(--color-ink-muted-48);
-  font-size: 12px;
-  line-height: 1.3;
-  letter-spacing: -0.12px;
-}
-.hero-detail h1 { font-size: 40px; line-height: 1.1; letter-spacing: 0; }
-.hero-detail .hero-lead { margin-left: 0; margin-right: 0; }
-
-/* full-bleed section pulse: canvas / parchment / tile-1 / tile-2 */
-.section { padding: var(--space-section) 0; }
-.section-canvas { background: var(--color-canvas); }
-.section-parchment { background: var(--color-parchment); }
-.section-dark { background: var(--color-tile-1); color: var(--color-body-on-dark); }
-.section-dark-2 { background: var(--color-tile-2); color: var(--color-body-on-dark); }
-.section-heading { max-width: 780px; margin-bottom: var(--space-xl); }
-.eyebrow {
-  margin-bottom: var(--space-xs);
-  color: var(--color-ink-muted-48);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.29;
-  letter-spacing: -0.224px;
-}
-.section-heading h2 {
-  font-family: var(--font-text);
-  font-size: 34px;
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.374px;
-}
-.section-caption {
-  margin-top: var(--space-xs);
-  color: var(--color-ink-muted-48);
-  font-size: 17px;
-  line-height: 1.47;
-  letter-spacing: -0.374px;
-}
-.on-dark h2 { color: var(--color-body-on-dark); }
-.on-dark .eyebrow, .on-dark .section-caption { color: var(--color-body-muted); }
-
-/* utility cards: 18px radius, hairline, no shadow */
-.utility-card {
-  background: var(--color-canvas);
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--rounded-lg);
-  padding: var(--space-lg);
-}
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 20px;
-}
-.kpi-card { min-height: 156px; }
-.kpi-label {
-  color: var(--color-ink-muted-48);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.29;
-  letter-spacing: -0.224px;
-}
-.kpi-value {
-  margin-top: var(--space-xs);
-  color: var(--color-ink);
-  font-family: var(--font-display);
-  font-size: 40px;
-  font-weight: 600;
-  line-height: 1.1;
-  letter-spacing: 0;
-}
-.kpi-note {
-  margin-top: var(--space-xs);
-  color: var(--color-ink-muted-48);
-  font-size: 14px;
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-}
-
-/* dark data table: white text, sky links */
-.table-scroll { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; }
-.dark-table { min-width: 860px; }
-.dark-table th {
-  padding: 0 var(--space-sm) var(--space-sm);
-  color: var(--color-body-muted);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.29;
-  letter-spacing: -0.224px;
-  text-align: left;
-  border-bottom: 1px solid rgba(255, 255, 255, .16);
-  white-space: nowrap;
-}
-.dark-table td {
-  padding: var(--space-md) var(--space-sm);
-  color: var(--color-body-on-dark);
-  font-size: 14px;
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  border-bottom: 1px solid rgba(255, 255, 255, .12);
-  vertical-align: top;
-}
-.dark-table tr:last-child td { border-bottom: 0; }
-.dark-table .text-link { color: var(--color-primary-on-dark); }
-.dark-table .muted, .dark-table .num { color: var(--color-body-muted); }
-.dark-table th:first-child, .dark-table td:first-child { padding-left: 0; }
-.dark-table th:last-child, .dark-table td:last-child { padding-right: 0; }
-.light-table th {
-  padding: 0 var(--space-sm) var(--space-sm);
-  color: var(--color-ink-muted-48);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.29;
-  letter-spacing: -0.224px;
-  text-align: left;
-  border-bottom: 1px solid var(--color-hairline);
-  white-space: nowrap;
-}
-.light-table td {
-  padding: var(--space-md) var(--space-sm);
-  color: var(--color-ink);
-  font-size: 14px;
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  border-bottom: 1px solid var(--color-divider-soft);
-  vertical-align: top;
-}
-.light-table tr:last-child td { border-bottom: 0; }
-.light-table th:first-child, .light-table td:first-child { padding-left: 0; }
-.light-table th:last-child, .light-table td:last-child { padding-right: 0; }
-.table-card { padding: var(--space-lg); }
-.num { white-space: nowrap; color: var(--color-ink-muted-48); font-variant-numeric: tabular-nums; }
-.reason { max-width: 260px; color: var(--color-ink-muted-48); overflow-wrap: anywhere; }
-.mono, code {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
-  font-size: 13px;
-}
-.muted { color: var(--color-ink-muted-48); }
-.kind {
-  display: inline-block;
-  color: var(--color-ink-muted-48);
-  font-size: 12px;
-  line-height: 1.3;
-  letter-spacing: -0.12px;
-  white-space: nowrap;
-}
-.text-link { color: var(--color-primary); }
-.badge {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: var(--rounded-sm);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: -0.12px;
-  white-space: nowrap;
-}
-.badge.ok { background: var(--color-divider-soft); color: var(--color-ink); }
-.badge.bad { background: var(--color-ink); color: var(--color-body-on-dark); }
-.badge.active { background: var(--color-parchment); color: var(--color-ink); }
-.badge.queued { background: var(--color-parchment); color: var(--color-ink-muted-48); }
-.dark-table .badge.ok { background: rgba(255, 255, 255, .14); color: var(--color-body-on-dark); }
-.dark-table .badge.bad { background: var(--color-body-on-dark); color: var(--color-ink); }
-.dark-table .badge.active {
-  background: rgba(41, 151, 255, .16);
-  color: var(--color-primary-on-dark);
-}
-.dark-table .badge.queued { background: rgba(255, 255, 255, .1); color: var(--color-body-muted); }
-
-/* failure cards: utility card, black flag, no red accent */
-.failure-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
-.failure-card { display: flex; flex-direction: column; min-height: 210px; }
-.failure-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-sm);
-}
-.flag {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: var(--rounded-sm);
-  background: var(--color-ink);
-  color: var(--color-body-on-dark);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: -0.12px;
-}
-.caption {
-  color: var(--color-ink-muted-48);
-  font-size: 12px;
-  line-height: 1.3;
-  letter-spacing: -0.12px;
-}
-.failure-title {
-  display: inline-block;
-  margin-top: var(--space-md);
-  color: var(--color-ink);
-  font-size: 21px;
-  font-weight: 600;
-  line-height: 1.19;
-  letter-spacing: 0.231px;
-}
-.failure-project {
-  margin-top: var(--space-xxs);
-  color: var(--color-ink-muted-80);
-  font-size: 14px;
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-}
-.failure-reason {
-  margin-top: var(--space-sm);
-  color: var(--color-ink-muted-80);
-  font-size: 17px;
-  line-height: 1.47;
-  letter-spacing: -0.374px;
-  overflow-wrap: anywhere;
-}
-.failure-foot {
-  margin-top: auto;
-  padding-top: var(--space-lg);
-  color: var(--color-ink-muted-48);
-  font-size: 12px;
-  line-height: 1.3;
-  letter-spacing: -0.12px;
-}
-.empty {
-  padding: var(--space-xxl) var(--space-lg);
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--rounded-lg);
-  background: var(--color-canvas);
-  color: var(--color-ink-muted-48);
-  font-size: 17px;
-  line-height: 1.47;
-  letter-spacing: -0.374px;
-  text-align: center;
-}
-.empty-dark {
-  border-color: rgba(255, 255, 255, .2);
-  background: transparent;
-  color: var(--color-body-muted);
-}
-
-/* metrics: numbers on dark tile, no cards */
-.metrics-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-xl);
-}
-.metric { border-top: 1px solid rgba(255, 255, 255, .18); padding-top: var(--space-md); }
-.metric-label {
-  color: var(--color-body-muted);
-  font-size: 14px;
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-}
-.metric-value {
-  margin-top: var(--space-xs);
-  color: var(--color-body-on-dark);
-  font-family: var(--font-display);
-  font-size: 40px;
-  font-weight: 600;
-  line-height: 1.1;
-  letter-spacing: 0;
-}
-
-/* detail: info table, timeline, logs */
-.info-table th {
-  width: 150px;
-  padding: var(--space-sm) var(--space-md);
-  color: var(--color-ink-muted-48);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.29;
-  letter-spacing: -0.224px;
-  text-align: left;
-  border-bottom: 1px solid var(--color-divider-soft);
-  vertical-align: top;
-}
-.info-table td {
-  padding: var(--space-sm) var(--space-md);
-  color: var(--color-ink);
-  font-size: 14px;
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-  border-bottom: 1px solid var(--color-divider-soft);
-  overflow-wrap: anywhere;
-}
-.info-table tr:last-child th, .info-table tr:last-child td { border-bottom: 0; }
-.timeline { list-style: none; margin: 0; padding: 0; }
-.timeline li {
-  display: grid;
-  grid-template-columns: 140px 110px minmax(0, 1fr);
-  gap: var(--space-sm);
-  padding: var(--space-sm) 0;
-  border-bottom: 1px solid var(--color-divider-soft);
-  font-size: 14px;
-  line-height: 1.43;
-  letter-spacing: -0.224px;
-}
-.timeline li:last-child { border-bottom: 0; }
-.timeline .time { color: var(--color-ink-muted-48); white-space: nowrap; }
-.timeline .event-kind { font-weight: 600; }
-.timeline .event-detail { color: var(--color-ink-muted-48); overflow-wrap: anywhere; }
-.code-block {
-  margin: 0;
-  padding: var(--space-lg);
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--rounded-sm);
-  background: var(--color-pearl);
-  color: var(--color-ink);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  overflow: auto;
-  max-height: 460px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.code-block-dark {
-  background: var(--color-tile-3);
-  border-color: rgba(255, 255, 255, .16);
-  color: var(--color-body-on-dark);
-}
-
-/* footer: parchment, fine print */
-.footer { padding: 64px 0; background: var(--color-parchment); }
-.footer-inner {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-lg);
-  flex-wrap: wrap;
-}
-.footer-brand {
-  color: var(--color-ink);
-  font-size: 21px;
-  font-weight: 600;
-  line-height: 1.19;
-  letter-spacing: 0.231px;
-}
-.footer-copy {
-  margin-top: var(--space-xxs);
-  color: var(--color-ink-muted-48);
-  font-size: 12px;
-  line-height: 1.3;
-  letter-spacing: -0.12px;
-}
-.footer-legal {
-  color: var(--color-ink-muted-48);
-  font-size: 12px;
-  line-height: 1.3;
-  letter-spacing: -0.12px;
-}
-
-/* breakpoints: 1068 / 833 / 640 / 419 */
-@media (max-width: 1068px) {
-  .wrap, .nav-inner, .sub-inner { padding-left: var(--space-xl); padding-right: var(--space-xl); }
-  .hero h1 { font-size: 40px; }
-  .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (max-width: 833px) {
-  .nav-links { display: none; }
-  .sub-note { display: none; }
-  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .failure-grid { grid-template-columns: 1fr; }
-  .metrics-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .section { padding: 64px 0; }
-  .hero { padding: 64px 0; }
-}
-@media (max-width: 640px) {
-  .wrap, .nav-inner, .sub-inner { padding-left: var(--space-lg); padding-right: var(--space-lg); }
-  .hero h1 { font-size: 34px; }
-  .hero-lead { font-size: 21px; line-height: 1.19; font-weight: 600; letter-spacing: 0.231px; }
-  .section { padding: var(--space-xxl) 0; }
-  .hero { padding: var(--space-xxl) 0; }
-  .kpi-grid { grid-template-columns: 1fr; }
-  .metrics-row { grid-template-columns: 1fr 1fr; gap: var(--space-lg); }
-  .footer { padding: var(--space-xxl) 0; }
-  .timeline li { grid-template-columns: 1fr; gap: var(--space-xxs); }
-  .dark-table { min-width: 720px; }
-}
-@media (max-width: 419px) {
-  .hero h1 { font-size: 28px; }
-  .sub-crumb { font-size: 17px; }
-  .hero-actions .button-primary, .hero-actions .button-secondary { width: 100%; }
-  .metrics-row { grid-template-columns: 1fr; }
-}
-"""
-
-
-def _page(title: str, body: str) -> str:
-    return (
-        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>{html.escape(title)}</title><style>{_CSS}</style></head>"
-        f"<body>{body}</body></html>"
-    )

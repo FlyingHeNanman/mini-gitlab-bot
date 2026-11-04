@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -17,6 +19,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from core.labels import TRIGGER_LABEL
 from core.policy import DEFAULT_FORBIDDEN_PATHS
+from gateway.config_store import read_config
+
+logger = logging.getLogger(__name__)
 
 #: 逗号分隔的列表字段。必须加 `NoDecode`：否则 pydantic-settings 会先按 JSON 解析
 #: 环境变量（`group/a,group/b` 直接报 JSONDecodeError），`mode="before"` 的校验器
@@ -35,6 +40,8 @@ class Settings(BaseSettings):
     agent_concurrency: int = 2
     work_dir: Path = Path("/work")
     db_path: Path = Path("/data/tasks.db")
+    #: 首次初始化 / 配置页写入的 JSON；启动时叠加到环境变量之上
+    config_file: Path = Path("/data/config.json")
     worker_enabled: bool = True
     worker_owner: str = "worker-1"
     port: int = 8080
@@ -100,9 +107,9 @@ class Settings(BaseSettings):
     # ---------- Dashboard（只读观测台） ----------
     #: 总开关；关掉后 /dashboard* 一律 404
     dashboard_enabled: bool = True
-    #: HTTP Basic 用户名；只在密码非空时生效
+    #: Dashboard 登录用户名；只在密码非空时生效
     dashboard_username: str = "admin"
-    #: HTTP Basic 密码；留空 = Dashboard 关闭（fail closed，绝不裸奔）
+    #: Dashboard 登录密码；留空 = Dashboard 关闭（fail closed，绝不裸奔）
     dashboard_password: str = ""
 
     # ---------- 可观测性与保留策略（M5） ----------
@@ -160,6 +167,8 @@ class Settings(BaseSettings):
     #: 预置的 codex 配置；留空 = 依赖操作者自己提供的 CODEX_CONFIG 或用户级配置。
     model_base_url: str = ""
     api_key_env: str = "LLM_API_KEY"  # 只传变量名给 codex（`env_key`），值只进子进程环境
+    #: 配置页写入的模型 key；留空时回落到环境变量。此字段绝不进 `/settings` 回显或日志
+    llm_api_key: str = Field(default="", repr=False)
     codex_expected_version: str = ""  # pin 版本自检（PLAN §7 基线 6）
     #: 追加的 `-c key=value`，例如 `model_providers.internal.base_url=https://llm.internal/v1`
     codex_config: CsvList = Field(default_factory=list)
@@ -218,6 +227,8 @@ class Settings(BaseSettings):
             warnings.append("DASHBOARD_PASSWORD 太短（<8 字符）：请换成足够随机的密码")
         if not self.gitlab_token:
             warnings.append("GITLAB_TOKEN 未设置：SCM 退回占位实现，权限闸门会拒绝所有触发")
+        if not self.llm_api_key and not os.environ.get(self.api_key_env):
+            warnings.append(f"{self.api_key_env} 未设置：codex 可能无法认证模型端点")
         if not self.model_base_url:
             warnings.append(
                 "MODEL_BASE_URL 为空：codex 的 provider 端点只能来自 CODEX_CONFIG 或用户级配置"
@@ -234,3 +245,19 @@ class Settings(BaseSettings):
                 "CODEX_EXPECTED_VERSION 为空：内核版本可能漂移（PLAN §7 基线 6 要求 pin）"
             )
         return warnings
+
+
+def load_settings() -> Settings:
+    """环境变量 + 可选配置文件；文件值只覆盖白名单字段，不反向写 env。"""
+    base = Settings()
+    try:
+        data = read_config(base.config_file)
+    except Exception:  # noqa: BLE001 配置坏了不应阻止服务启动；启动告警会暴露问题
+        return base
+    if not data:
+        return base
+    try:
+        return Settings(**data)
+    except Exception:  # noqa: BLE001 手工改坏配置文件时退回环境变量，服务仍可启动
+        logger.warning("配置文件 %s 格式不合法，已忽略并回退到环境变量", base.config_file)
+        return base

@@ -139,6 +139,15 @@ class DashboardStats:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyCount:
+    """某一天的任务量（`day` 为 UTC 日期，ISO `YYYY-MM-DD`）。"""
+
+    day: str
+    total: int
+    failed: int
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectSummary:
     """按项目聚合的只读统计，供 Dashboard 项目表使用。"""
 

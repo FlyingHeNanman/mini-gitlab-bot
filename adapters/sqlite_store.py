@@ -23,6 +23,7 @@ from uuid import uuid4
 
 from core.models import (
     UPDATABLE_FIELDS,
+    DailyCount,
     DashboardStats,
     EnqueueOutcome,
     ProjectRef,
@@ -428,6 +429,24 @@ class SqliteStore:
             succeeded_since=int(row["succeeded_since"] or 0),
             failed_since=int(row["failed_since"] or 0),
         )
+
+    def daily_counts(self, *, since: datetime) -> list[DailyCount]:
+        """按 UTC 日期聚合任务量；没有任务的日期不返回，由渲染层补零。"""
+        rows = self._fetch_all(
+            """
+            SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS total,
+                   SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) AS failed
+            FROM tasks
+            WHERE created_at >= ?
+            GROUP BY day
+            ORDER BY day ASC
+            """,
+            (_iso(since),),
+        )
+        return [
+            DailyCount(day=row["day"], total=int(row["total"] or 0), failed=int(row["failed"] or 0))
+            for row in rows
+        ]
 
     def project_summaries(self, *, limit: int = 50) -> list[ProjectSummary]:
         """按项目聚合；按最后活动时间倒序，避免 Dashboard 被冷项目淹没。"""

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from core.dashboard_view import DashboardData, render_dashboard, render_dashboard_task
+from core.dashboard_view import (
+    DashboardData,
+    render_dashboard,
+    render_dashboard_projects,
+    render_dashboard_recent,
+    render_dashboard_task,
+)
 from core.models import DashboardStats, ProjectRef, ProjectSummary, Task, TaskEvent
 from core.states import TaskKind, TaskState
 
@@ -112,14 +118,59 @@ def test_dashboard_task_detail_renders_events_and_issue_link() -> None:
     assert "traceback" in body
     assert "queued" in body and "failed" in body
     assert "codex log tail" in body
-    assert "返回 Dashboard" in body
+    assert "返回最近任务" in body
+    assert '<a class="active" href="/dashboard/recent">最近任务</a>' in body
 
 
-def test_dashboard_uses_design_md_tokens_and_single_accent() -> None:
+def test_dashboard_uses_dusty_canvas_tokens() -> None:
     body = render_dashboard(make_data())
-    assert "--color-primary: #0066cc" in body
-    assert "SF Pro Display" in body and "SF Pro Text" in body
-    assert "font-size: 56px" in body
+    assert "--canvas: #B0B7CE" in body
+    assert "--shell: #F0F1F4" in body
+    assert "--brand: #E24D33" in body
+    assert "Source Serif 4" in body and "Inter" in body
+    assert "border-radius: var(--rounded-card)" in body
+    assert "box-shadow: var(--shadow-card)" in body
     assert "linear-gradient" not in body
-    assert "box-shadow" not in body
-    assert "text-shadow" not in body
+    assert "#0066cc" not in body
+    assert "#000000" not in body
+
+
+def test_dashboard_nav_switches_to_separate_pages() -> None:
+    body = render_dashboard(make_data())
+    assert '<a class="active" href="/dashboard">总览</a>' in body
+    assert 'href="/dashboard/recent">查看全部</a>' in body
+    assert 'href="/dashboard/projects">全部 2 个</a>' in body
+    assert "/dashboard#recent" not in body
+    assert "/dashboard#projects" not in body
+
+
+def test_recent_page_has_own_active_nav_and_full_list() -> None:
+    tasks = tuple(make_task(id=f"task-{index}", delivery_key=f"d-{index}") for index in range(6))
+    body = render_dashboard_recent(make_data(recent=tasks))
+    assert '<a class="active" href="/dashboard/recent">最近任务</a>' in body
+    assert '<a class="active" href="/dashboard">总览</a>' not in body
+    assert "最近任务" in body and "Task stream" in body
+    assert all(task.short_id in body for task in tasks)
+    assert "只读" in body
+    assert "不在这里重试 / 取消" in body
+
+
+def test_projects_page_has_own_active_nav_and_full_list() -> None:
+    projects = tuple(
+        ProjectSummary(ProjectRef(index, f"group/project-{index}"), index, 0, 1, 0, NOW)
+        for index in range(8)
+    )
+    body = render_dashboard_projects(make_data(projects=projects))
+    assert '<a class="active" href="/dashboard/projects">项目</a>' in body
+    assert '<a class="active" href="/dashboard">总览</a>' not in body
+    assert "项目节奏" in body and "Repositories" in body
+    assert "https://gitlab.example.com/group/project-7" in body
+    assert "只读汇总" in body
+
+
+def test_recent_and_projects_pages_keep_empty_states() -> None:
+    empty = make_data(recent=(), projects=())
+    recent = render_dashboard_recent(empty)
+    projects = render_dashboard_projects(empty)
+    assert "还没有任务" in recent
+    assert "还没有项目数据" in projects

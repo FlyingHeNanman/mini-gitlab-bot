@@ -1,8 +1,8 @@
-"""`/dashboard` 的 HTTP 行为：Basic Auth、数据展示、只读与任务详情。"""
+"""`/dashboard` 的 HTTP 行为：登录页 + session、数据展示、只读与任务详情。"""
 
 from __future__ import annotations
 
-import base64
+from contextlib import asynccontextmanager
 from datetime import timedelta
 
 import httpx
@@ -15,49 +15,92 @@ PASSWORD = "s3cr3t-pass"
 TOKEN = "admin-token-0123456789"
 
 
-def basic_auth(username: str = "admin", password: str = PASSWORD) -> dict[str, str]:
-    raw = f"{username}:{password}".encode()
-    return {"Authorization": f"Basic {base64.b64encode(raw).decode()}"}
-
-
-async def get(app, path: str, *, headers: dict[str, str] | None = None) -> httpx.Response:
-    transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.get(path, headers=headers or {})
-
-
 def make_app(runtime, settings, **overrides):
     dashboard_settings = settings.model_copy(
-        update={"dashboard_username": "admin", "dashboard_password": PASSWORD, **overrides}
+        update={
+            "dashboard_username": "admin",
+            "dashboard_password": PASSWORD,
+            "dashboard_enabled": True,
+            **overrides,
+        }
     )
     return create_app(settings=dashboard_settings, runtime=runtime)
 
 
-async def test_dashboard_is_404_without_password(make_runtime, settings) -> None:
+async def get(app, path: str, *, cookies: httpx.Cookies | None = None) -> httpx.Response:
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", cookies=cookies
+    ) as client:
+        return await client.get(path, follow_redirects=False)
+
+
+async def login(app, *, password: str = PASSWORD, username: str = "admin") -> httpx.Response:
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.post(
+            "/login",
+            data={"username": username, "password": password, "next": "/dashboard"},
+            follow_redirects=False,
+        )
+
+
+@asynccontextmanager
+async def logged_in_client(app):
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        follow_redirects=False,
+    ) as client:
+        response = await client.post(
+            "/login",
+            data={"username": "admin", "password": PASSWORD, "next": "/dashboard"},
+        )
+        assert response.status_code == 303
+        yield client
+
+
+async def test_dashboard_without_password_fails_closed_or_goes_to_setup(
+    make_runtime, settings
+) -> None:
     runtime, _ = make_runtime(tasks_page_enabled=False)
-    for overrides in (
-        {"dashboard_password": ""},
-        {"dashboard_enabled": False},
-    ):
-        app = make_app(runtime, settings, **overrides)
-        assert (await get(app, "/dashboard")).status_code == 404
-        assert (await get(app, "/dashboard/task/task-x")).status_code == 404
+    app = make_app(runtime, settings, dashboard_password="")
+    response = await get(app, "/dashboard")
+    assert response.status_code in {303, 404}
+    if response.status_code == 303:
+        assert response.headers["location"] == "/setup"
+    assert (await get(app, "/dashboard/task/task-x")).status_code in {303, 404}
+    assert (await get(app, "/dashboard/recent")).status_code in {303, 404}
+    assert (await get(app, "/dashboard/projects")).status_code in {303, 404}
 
 
-async def test_dashboard_requires_basic_auth(make_runtime, settings) -> None:
+async def test_dashboard_uses_login_page_and_session(make_runtime, settings) -> None:
     runtime, _ = make_runtime(admin_token=TOKEN)
     app = make_app(runtime, settings)
-    denied = await get(app, "/dashboard")
-    assert denied.status_code == 401
-    assert denied.headers["www-authenticate"].startswith("Basic ")
-    assert "unauthorized" in denied.text
 
-    assert (await get(app, "/dashboard", headers=basic_auth(password="wrong"))).status_code == 401
-    assert (await get(app, "/dashboard", headers=basic_auth(username="nope"))).status_code == 401
-    assert (
-        await get(app, "/dashboard", headers={"Authorization": "Basic not-base64"})
-    ).status_code == 401
-    assert (await get(app, "/dashboard", headers=basic_auth())).status_code == 200
+    redirected = await get(app, "/dashboard")
+    assert redirected.status_code == 303
+    assert "/login" in redirected.headers["location"]
+
+    login_page = await get(app, "/login")
+    assert login_page.status_code == 200
+    assert "登录观测台" in login_page.text
+    assert "Basic" not in login_page.text
+
+    denied = await login(app, password="wrong")
+    assert denied.status_code == 401
+    assert "用户名或密码不正确" in denied.text
+
+    response = await login(app)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/dashboard"
+    cookie = response.cookies.get("mgb_session")
+    assert cookie
+
+    page = await get(app, "/dashboard", cookies=httpx.Cookies({"mgb_session": cookie}))
+    assert page.status_code == 200
+    assert (await get(app, "/dashboard/recent")).status_code == 303
+    assert (await get(app, "/dashboard/projects")).status_code == 303
 
 
 async def test_dashboard_shows_real_task_data_without_admin_token(
@@ -72,22 +115,23 @@ async def test_dashboard_shows_real_task_data_without_admin_token(
     runtime.metrics.inc("sweep_errors_total")
 
     app = make_app(runtime, settings)
-    page = await get(app, "/dashboard", headers=basic_auth())
-    assert page.status_code == 200
-    assert page.headers["content-type"].startswith("text/html")
-    assert "运行概况" in page.text
-    assert "group/project-a" in page.text
-    assert "模型返回空结果" in page.text
-    assert queued.short_id in page.text
-    assert failed.short_id in page.text
-    assert "Sweep 轮次" in page.text
-    assert "刷新数据" in page.text
-    assert 'http-equiv="refresh"' not in page.text
-    assert page.headers["cache-control"] == "no-store"
-    assert TOKEN not in page.text
+    async with logged_in_client(app) as client:
+        page = await client.get("/dashboard")
+        assert page.status_code == 200
+        assert page.headers["content-type"].startswith("text/html")
+        assert "运行概况" in page.text
+        assert "group/project-a" in page.text
+        assert "模型返回空结果" in page.text
+        assert queued.short_id in page.text
+        assert failed.short_id in page.text
+        assert "Sweep 轮次" in page.text
+        assert "刷新数据" in page.text
+        assert 'http-equiv="refresh"' not in page.text
+        assert page.headers["cache-control"] == "no-store"
+        assert TOKEN not in page.text
 
 
-async def test_dashboard_task_detail_is_basic_auth_protected(make_runtime, settings, clock) -> None:
+async def test_dashboard_task_detail_is_login_protected(make_runtime, settings, clock) -> None:
     runtime, _ = make_runtime(with_worker=True, admin_token=TOKEN)
     task = runtime.store.enqueue(make_trigger(issue_iid=9), now=clock()).task
     assert task is not None
@@ -100,18 +144,19 @@ async def test_dashboard_task_detail_is_basic_auth_protected(make_runtime, setti
     )
     app = make_app(runtime, settings)
 
-    assert (await get(app, f"/dashboard/task/{task.id}")).status_code == 401
-    detail = await get(app, f"/dashboard/task/{task.id}", headers=basic_auth())
-    assert detail.status_code == 200
-    assert "任务 " + task.short_id in detail.text
-    assert "diff 超限" in detail.text
-    assert "a.py +2000" in detail.text
-    assert "事件时间线" in detail.text
-    assert "返回 Dashboard" in detail.text
-    assert TOKEN not in detail.text
+    assert (await get(app, f"/dashboard/task/{task.id}")).status_code == 303
+    async with logged_in_client(app) as client:
+        detail = await client.get(f"/dashboard/task/{task.id}")
+        assert detail.status_code == 200
+        assert "任务 " + task.short_id in detail.text
+        assert "diff 超限" in detail.text
+        assert "a.py +2000" in detail.text
+        assert "事件时间线" in detail.text
+        assert "返回最近任务" in detail.text
+        assert TOKEN not in detail.text
 
-    missing = await get(app, "/dashboard/task/task-doesnotexist", headers=basic_auth())
-    assert missing.status_code == 404
+        missing = await client.get("/dashboard/task/task-doesnotexist")
+        assert missing.status_code == 404
 
 
 async def test_dashboard_is_read_only_and_ignores_admin_token(
@@ -122,14 +167,51 @@ async def test_dashboard_is_read_only_and_ignores_admin_token(
     assert task is not None
     app = make_app(runtime, settings)
 
-    # 只读：没有可写的 POST 入口
-    transport = ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(f"/dashboard/task/{task.id}", headers=basic_auth())
-    assert response.status_code == 405
+    async with logged_in_client(app) as client:
+        # 只读：没有可写的 POST 入口
+        response = await client.post(f"/dashboard/task/{task.id}")
+        assert response.status_code == 405
 
     # 任务页的 token 不是 Dashboard 的凭据；两种入口互不混用
-    assert (await get(app, "/dashboard", headers={"X-Admin-Token": TOKEN})).status_code == 401
+    assert (
+        await get(app, "/dashboard", cookies=httpx.Cookies({"X-Admin-Token": TOKEN}))
+    ).status_code == 303
+
+
+async def test_dashboard_nav_switches_to_standalone_recent_and_projects_pages(
+    make_runtime, settings, clock
+) -> None:
+    runtime, _ = make_runtime(with_worker=True, admin_token=TOKEN)
+    first = runtime.store.enqueue(make_trigger(issue_iid=1, delivery_key="n-1"), now=clock()).task
+    second = runtime.store.enqueue(make_trigger(issue_iid=2, delivery_key="n-2"), now=clock()).task
+    assert first is not None and second is not None
+    runtime.store.fail(second.id, stage="running", reason="模型返回空结果", now=clock())
+    app = make_app(runtime, settings)
+
+    async with logged_in_client(app) as client:
+        overview = await client.get("/dashboard")
+        assert overview.status_code == 200
+        assert '<a class="active" href="/dashboard">总览</a>' in overview.text
+        assert 'href="/dashboard/recent">查看全部</a>' in overview.text
+        assert 'href="/dashboard/projects">全部 1 个</a>' in overview.text
+
+        recent = await client.get("/dashboard/recent")
+        assert recent.status_code == 200
+        assert '<a class="active" href="/dashboard/recent">最近任务</a>' in recent.text
+        assert '<a class="active" href="/dashboard">总览</a>' not in recent.text
+        assert first.short_id in recent.text and second.short_id in recent.text
+        assert "Task stream" in recent.text
+
+        projects = await client.get("/dashboard/projects")
+        assert projects.status_code == 200
+        assert '<a class="active" href="/dashboard/projects">项目</a>' in projects.text
+        assert '<a class="active" href="/dashboard">总览</a>' not in projects.text
+        assert "group/project-a" in projects.text
+        assert "Repositories" in projects.text
+
+        task = await client.get(f"/dashboard/task/{second.id}")
+        assert task.status_code == 200
+        assert '<a class="active" href="/dashboard/recent">最近任务</a>' in task.text
 
 
 async def test_dashboard_store_failure_returns_503_without_details(
@@ -142,7 +224,8 @@ async def test_dashboard_store_failure_returns_503_without_details(
 
     monkeypatch.setattr(runtime.store, "dashboard_stats", boom)
     app = make_app(runtime, settings)
-    response = await get(app, "/dashboard", headers=basic_auth())
-    assert response.status_code == 503
-    assert "db down" not in response.text
-    assert "/secret/path" not in response.text
+    async with logged_in_client(app) as client:
+        response = await client.get("/dashboard")
+        assert response.status_code == 503
+        assert "db down" not in response.text
+        assert "/secret/path" not in response.text
